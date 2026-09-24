@@ -204,6 +204,9 @@ dialog.wide { width: min(760px,calc(100% - 32px)); }
 #editor-dialog small { display: block; margin-top: 12px; line-height: 1.6; }
 .file-tools select { min-width: 120px; }
 .file-tools > button { font-size: 11px; }
+.update-panel .panel-heading p code { padding: 2px 6px; background: #f4f6f8; border-radius: 5px; font-size: 11px; }
+.update-strip { align-items: center; justify-content: space-between; margin-bottom: 0; }
+.update-actions { display: flex; gap: 10px; }
 dialog::backdrop { background: #101f32a6; backdrop-filter: blur(2px); }
 .dialog-icon { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 50%; background: #fff0e8; color: #bd7852; font-size: 20px; margin-bottom: 16px; }
 dialog h2 { font-size: 20px; }

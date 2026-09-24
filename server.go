@@ -37,7 +37,7 @@ func newHandler(cfg *config.Config, files *sysinfo.Files, manager *sysinfo.Manag
 	register := func(pattern string, h http.HandlerFunc) { mux.Handle(pattern, a.Require(audit(cfg.AdminUser, h))) }
 	register("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if err := tmpl.ExecuteTemplate(w, "index.html", map[string]any{"User": cfg.AdminUser, "CSRF": auth.CSRF(r), "ReadOnly": cfg.ReadOnly, "UploadMB": files.UploadLimit() >> 20}); err != nil {
+		if err := tmpl.ExecuteTemplate(w, "index.html", map[string]any{"User": cfg.AdminUser, "CSRF": auth.CSRF(r), "ReadOnly": cfg.ReadOnly, "UploadMB": files.UploadLimit() >> 20, "Version": sysinfo.BuildVersion}); err != nil {
 			slog.Error("render", "error", err)
 		}
 	})
@@ -58,6 +58,8 @@ func newHandler(cfg *config.Config, files *sysinfo.Files, manager *sysinfo.Manag
 	register("POST /api/file/delete", files.Delete)
 	register("POST /api/file/chmod", files.Chmod)
 	register("GET /api/logs", manager.Logs)
+	register("GET /api/update/check", sysinfo.UpdateCheck)
+	register("POST /api/update/apply", sysinfo.UpdateApply)
 	register("GET /api/firewall", manager.Firewall)
 	register("POST /api/firewall/rule", manager.FirewallAction)
 	return security(cfg, files.UploadLimit(), mux), nil

@@ -3,6 +3,7 @@ import { overview } from './overview.js';
 import { processes, services, setupProcesses, setupServices } from './services.js';
 import { files, setupFiles } from './files.js';
 import { logs, firewall, setupTools } from './tools.js';
+import { setupUpdate } from './update.js';
 
 const pages = {
   overview: ['系统概览', '掌握资源使用情况，让每一次运维都有据可循。', overview],
@@ -73,7 +74,7 @@ $('.skip-link').addEventListener('click', event => {
 });
 $('#refresh').addEventListener('click', guard(() => { message(''); return refresh(); }));
 $('#message-close').addEventListener('click', () => message(''));
-setupProcesses(); setupServices(go); setupFiles(); setupTools();
+setupProcesses(); setupServices(go); setupFiles(); setupTools(); setupUpdate();
 if (readOnly) document.querySelectorAll('[data-mutation]').forEach(control => { control.disabled = true; control.title = '当前账号只有查看权限'; });
 $('#auto-refresh').addEventListener('change', () => { if ($('#auto-refresh').checked && current === 'overview') refresh(); });
 setInterval(() => { if (!document.hidden && current === 'overview' && $('#auto-refresh').checked) refresh(); }, 3000);

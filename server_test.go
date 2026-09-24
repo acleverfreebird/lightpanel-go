@@ -157,7 +157,7 @@ func TestTemplateEscaping(t *testing.T) {
 		t.Fatal(err)
 	}
 	var b strings.Builder
-	if err := tmpl.ExecuteTemplate(&b, "index.html", map[string]any{"User": "<script>alert(1)</script>", "CSRF": "safe"}); err != nil {
+	if err := tmpl.ExecuteTemplate(&b, "index.html", map[string]any{"User": "<script>alert(1)</script>", "CSRF": "safe", "UploadMB": 32, "Version": "dev"}); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(b.String(), "<script>alert(1)</script>") {

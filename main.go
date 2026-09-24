@@ -23,6 +23,9 @@ import (
 	"lightpanel/pkg/sysinfo"
 )
 
+// Injected at build time: -ldflags "-X main.version=v1.2.3".
+var version = "dev"
+
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 	if err := run(); err != nil {
@@ -41,6 +44,9 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	sysinfo.BuildVersion = version
+	sysinfo.UpdateRepo = cfg.UpdateRepo
+	sysinfo.UpdateMirror = cfg.UpdateMirror
 	logOutput := os.Stdout
 	if cfg.LogFile != "" {
 		logOutput, err = os.OpenFile(cfg.LogFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)

@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -25,10 +26,12 @@ type Config struct {
 	LogFile      string `toml:"log_file"`
 	ReadOnly     bool   `toml:"read_only"`
 	MaxUploadMB  int    `toml:"max_upload_mb"`
+	UpdateRepo   string `toml:"update_repo"`
+	UpdateMirror string `toml:"update_mirror"`
 }
 
 func LoadConfig(path string) (*Config, error) {
-	c := &Config{Host: "127.0.0.1", Port: 8888, AdminUser: "admin", SandboxRoot: "/var/lib/lightpanel/files"}
+	c := &Config{Host: "127.0.0.1", Port: 8888, AdminUser: "admin", SandboxRoot: "/var/lib/lightpanel/files", UpdateRepo: "acleverfreebird/lightpanel-go"}
 	if path != "" {
 		f, err := os.Open(path)
 		if err != nil {
@@ -39,7 +42,7 @@ func LoadConfig(path string) (*Config, error) {
 			return nil, err
 		}
 	}
-	for key, dst := range map[string]*string{"HOST": &c.Host, "ADMIN_USER": &c.AdminUser, "PASS_HASH": &c.PasswordHash, "SANDBOX_ROOT": &c.SandboxRoot, "TLS_CERT": &c.TLSCert, "TLS_KEY": &c.TLSKey, "PUBLIC_ORIGIN": &c.PublicOrigin, "LOG_FILE": &c.LogFile} {
+	for key, dst := range map[string]*string{"HOST": &c.Host, "ADMIN_USER": &c.AdminUser, "PASS_HASH": &c.PasswordHash, "SANDBOX_ROOT": &c.SandboxRoot, "TLS_CERT": &c.TLSCert, "TLS_KEY": &c.TLSKey, "PUBLIC_ORIGIN": &c.PublicOrigin, "LOG_FILE": &c.LogFile, "UPDATE_REPO": &c.UpdateRepo, "UPDATE_MIRROR": &c.UpdateMirror} {
 		if v, ok := os.LookupEnv("LP_" + key); ok {
 			*dst = v
 		}
@@ -70,6 +73,15 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if c.MaxUploadMB < 1 || c.MaxUploadMB > 2048 {
 		return nil, fmt.Errorf("max_upload_mb must be 1..2048")
+	}
+	if !regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$`).MatchString(c.UpdateRepo) {
+		return nil, fmt.Errorf("update_repo must be owner/repo")
+	}
+	if c.UpdateMirror != "" {
+		u, err := url.Parse(c.UpdateMirror)
+		if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || u.Path != "" || u.RawQuery != "" || strings.HasSuffix(c.UpdateMirror, "/") {
+			return nil, fmt.Errorf("update_mirror must be an http(s) origin without path or trailing slash")
+		}
 	}
 	if net.ParseIP(c.Host) == nil || c.Port < 1 || c.Port > 65535 {
 		return nil, fmt.Errorf("host must be an IP; port must be 1..65535")

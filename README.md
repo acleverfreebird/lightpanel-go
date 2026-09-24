@@ -25,6 +25,7 @@ pkg/sysinfo/metrics.go       CPU/内存/磁盘/网络/负载/运行时间
 pkg/sysinfo/process.go       /proc 进程搜索、分页、pidfd 信号
 pkg/sysinfo/service.go       systemd 列表/状态/启停/重启
 pkg/sysinfo/filemanager.go   受限目录浏览/上传/下载/新建/重命名/编辑/递归删除/chmod
+pkg/sysinfo/update.go        检查 GitHub Release、校验 SHA256、替换二进制并重启服务
 pkg/sysinfo/logs.go          journalctl 系统与服务日志
 pkg/sysinfo/firewall.go      UFW/firewalld 状态和端口规则
 pkg/**/*_test.go             安全边界与解析测试
@@ -34,13 +35,14 @@ templates/*.html            登录页与管理页模板
 config.toml                 无预置密码的配置样例
 lightpanel.service          systemd 单元
 Makefile                    Linux amd64/arm64 构建与测试
+.github/workflows/release.yml  推送 v* 标签时构建发布产物（amd64/arm64 + SHA256SUMS）
 scripts/smoke.py             可选开发验证脚本（非运行依赖）
 docs/VALIDATION.md           验证记录与已知限制
 ```
 
 ### MVP 范围
 
-已实现：系统概览、进程搜索/分页/结束、systemd 服务管理、文件浏览/上传/下载/新建文件夹/重命名/在线编辑/递归删除/权限、单管理员登录和可选只读权限、系统/服务日志、防火墙端口规则。Web 终端是需求中的可选项，本版不包含，`/ws/terminal` 返回 404。
+已实现：系统概览、进程搜索/分页/结束、systemd 服务管理、文件浏览/上传/下载/新建文件夹/重命名/在线编辑/递归删除/权限、版本检查与一键更新、单管理员登录和可选只读权限、系统/服务日志、防火墙端口规则。Web 终端是需求中的可选项，本版不包含，`/ws/terminal` 返回 404。
 
 安全边界：这是有权限的主机管理工具，不是多租户容器。HTTP 文件操作严格限制在独立目录；目录内不得放置配置、证书、密码哈希、socket、设备节点、bind mount 或共享系统目录。`os.Root` 不隔离挂载点，不能用它代替操作系统沙箱。下载/chmod/编辑读取拒绝符号链接及多硬链接普通文件；浏览不跟随目录项符号链接；只允许普通文件上传，禁止覆盖；目录删除默认要求为空，带 `recursive=true` 时递归删除且不允许删除根；在线编辑只处理 ≤1 MiB 且不含 NUL 的普通文件，保存先写临时文件再原子替换，且拒绝以符号链接为目标的写入。
 
@@ -76,6 +78,8 @@ API 默认必须登录。页面 `GET /` 未登录时跳转到 `/login`；API 返
 | POST | `/api/file/rename` | `path,to`；`to` 为相对路径，可在改名的同时移动，`to` 不得为根 |
 | POST | `/api/file/delete` | `path`；可选 `recursive=true` 递归删除，不允许删除根 |
 | POST | `/api/file/chmod` | `path,mode`；普通文件，三位八进制 000–777，不允许 setuid/setgid |
+| GET | `/api/update/check` | 查询 `update_repo` 的最新 Release；无发布版本时 `latest` 为空 |
+| POST | `/api/update/apply` | `tag`；下载对应架构二进制并校验 SHA256SUMS，原子替换自身后重启服务；非 amd64/arm64 返回 501 |
 | GET | `/api/logs` | `name` 可选；`lines=1..1000` 默认 200 |
 | GET | `/api/firewall` | `engine=ufw或firewalld` 可选；返回状态与规则文本 |
 | POST | `/api/firewall/rule` | `engine,port=1..65535,protocol=tcp或udp,action` |
@@ -129,6 +133,13 @@ sudo bash install-lightpanel.sh
 - GitHub 直连不畅时：`sudo LP_SOURCE_MIRROR='https://ghproxy.example/' bash install-lightpanel.sh`，源码/Release 下载会先尝试镜像前缀再回退官方地址（Go 工具链已内置 golang.google.cn 与阿里云镜像回退，Go 模块代理失败自动切换 goproxy.cn）。
 - 卸载：`curl -fsSL https://raw.githubusercontent.com/acleverfreebird/lightpanel-go/main/scripts/uninstall.sh | sudo bash`（加 `--purge` 一并删除文件沙箱）。
 
+### 发布与在线更新
+
+- 发布流程：推送 `v*` 标签（如 `git tag v0.1.0 && git push origin v0.1.0`），GitHub Actions 自动构建 amd64/arm64 静态二进制（版本号注入 `-X main.version`）、生成 `SHA256SUMS` 并发布到该标签的 Release。
+- 面板内更新：概览页「版本与更新」→「检查更新」对比当前版本与最新 Release；确认后「更新到最新版」下载对应架构二进制，先校验 SHA256 再原子替换 `/proc/self/exe`，随后自动 `systemctl restart lightpanel`。整个流程需要登录、带 CSRF 校验、计入审计，只读模式不可用。
+- GitHub 直连不畅时配置 `update_mirror`（或 `LP_UPDATE_MIRROR`）为镜像站点源（如 `https://ghproxy.family`），下载会走 `镜像 + 官方地址` 前缀；API 查询仍直连 GitHub。
+- 安全权衡：校验和来自同一 Release，防下载损坏但不防 Release 本身被篡改；上游仓库安全即更新安全。不想使用时可忽略该卡片，继续用 install.sh 升级。
+
 ### 编译（运行服务器无需 Go）
 
 使用最新维护版 Go（最低 1.25），无需 C 工具链：
@@ -178,7 +189,7 @@ ssh -N -L 8888:127.0.0.1:8888 user@your-server
 
 仍在本地打开 `http://127.0.0.1:8888`，保持与 `public_origin` 相同。不要用 `localhost` 替代 `127.0.0.1`，除非同时修改配置。
 
-TOML 是可选外部文件：不传 `-c` 时只用安全默认值和环境变量。全部支持覆盖：`LP_HOST`、`LP_PORT`、`LP_ADMIN_USER`、`LP_PASS_HASH`、`LP_SANDBOX_ROOT`、`LP_TLS_CERT`、`LP_TLS_KEY`、`LP_PUBLIC_ORIGIN`、`LP_LOG_FILE`、`LP_READ_ONLY`、`LP_MAX_UPLOAD_MB`（1..2048，默认 32）。生产配置/哈希/私钥应仅允许运行账号读取，且必须位于文件管理目录以外。
+TOML 是可选外部文件：不传 `-c` 时只用安全默认值和环境变量。全部支持覆盖：`LP_HOST`、`LP_PORT`、`LP_ADMIN_USER`、`LP_PASS_HASH`、`LP_SANDBOX_ROOT`、`LP_TLS_CERT`、`LP_TLS_KEY`、`LP_PUBLIC_ORIGIN`、`LP_LOG_FILE`、`LP_READ_ONLY`、`LP_MAX_UPLOAD_MB`（1..2048，默认 32）、`LP_UPDATE_REPO`（默认 `acleverfreebird/lightpanel-go`）、`LP_UPDATE_MIRROR`（http(s) 源，留空直连 GitHub）。生产配置/哈希/私钥应仅允许运行账号读取，且必须位于文件管理目录以外。
 
 ### HTTPS 与反向代理
 

@@ -54,6 +54,19 @@ func TestConfigFailsClosed(t *testing.T) {
 	if err != nil || c.MaxUploadMB != 128 {
 		t.Fatalf("upload limit: %+v %v", c, err)
 	}
+	t.Setenv("LP_UPDATE_REPO", "bad")
+	if _, err := LoadConfig(""); err == nil {
+		t.Fatal("invalid update repo accepted")
+	}
+	t.Setenv("LP_UPDATE_REPO", "acleverfreebird/lightpanel-go")
+	t.Setenv("LP_UPDATE_MIRROR", "https://mirror.example.com/")
+	if _, err := LoadConfig(""); err == nil {
+		t.Fatal("mirror with trailing slash accepted")
+	}
+	t.Setenv("LP_UPDATE_MIRROR", "https://mirror.example.com")
+	if _, err := LoadConfig(""); err != nil {
+		t.Fatal(err)
+	}
 }
 func TestConfigRejectsUnknownKey(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "test.toml")

@@ -69,3 +69,15 @@ WSL Ubuntu 24.04（Go 1.27.1）实测：
 - `GOOS=linux go vet ./...`、`gofmt` 通过。
 - 重建 linux-amd64 后 `python3 scripts/smoke.py` 通过：启动 31.8 ms、RSS 约 11.5 MiB、文件往返 1.06 MiB、优雅关闭与审计验证均成功。
 - 保存路径的符号链接契约与全站一致：编辑读取、写入目标均拒绝符号链接（`TestFileLifecycle` 覆盖）。
+
+## 2026-09-25 在线更新功能复验
+
+新增半自动更新链路：面板概览页「版本与更新」卡片（`GET /api/update/check` + `POST /api/update/apply`）、`main.version` 构建注入（Makefile 与 GitHub Actions `release.yml`，推送 `v*` 标签自动发布 amd64/arm64 二进制与 `SHA256SUMS`）、可选 `update_repo`/`update_mirror` 配置。
+
+更新实现要点与验证：
+
+- 检查：调 GitHub Releases API，无发布版本时返回空 `latest`（前端提示"仓库还没有发布版本"），404 不作为错误。
+- 应用：仅支持 amd64/arm64；二进制下载到 `/proc/self/exe` 同目录（保证同文件系统原子 rename），先校验 `SHA256SUMS` 再 0755 替换，响应返回后以新会话 `systemctl restart lightpanel`；版本相同或更旧时跳过下载并明确返回。
+- 单测（WSL Ubuntu 24.04，Go 1.27.1，`go test -race` 通过）：假 Release 服务器覆盖检查、成功替换（内容/权限/临时文件清理/重启调度）、坏校验和拒绝且不动原二进制、已最新跳过、无 release、版本比较（多段数字、pre-release、`dev` 回退）。
+- 浏览器实测：登录实例显示注入的版本号，点击「检查更新」经真实 GitHub API 返回"仓库还没有发布版本"（仓库尚无 Release），链路完整。
+- 安全边界：更新接口同样受登录 + CSRF + 只读模式约束并计入审计；校验和防传输损坏，不防上游 Release 被篡改（已在 README 声明）。

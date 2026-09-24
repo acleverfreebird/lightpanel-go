@@ -8,6 +8,10 @@ sandbox_root = "/var/lib/lightpanel/files"
 max_upload_mb = 32
 public_origin = "http://127.0.0.1:8888"
 read_only = false
+# 在线更新：从 GitHub Releases 检查并下载官方二进制（SHA256 校验后替换）。
+update_repo = "acleverfreebird/lightpanel-go"
+# 直连 GitHub 受限时，可填一个镜像站点源（如 https://ghproxy 家族），留空直连。
+update_mirror = ""
 tls_cert = ""
 tls_key = ""
 log_file = ""
