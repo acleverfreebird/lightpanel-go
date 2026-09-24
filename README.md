@@ -104,6 +104,27 @@ CPU/网络首次请求用于建立基线，后续返回采样间隔平均值；�
 
 ## 4. 编译与部署
 
+### 一键部署（远程 Linux 服务器）
+
+在目标服务器（Ubuntu/Debian/CentOS/Rocky/Alma，amd64/arm64，systemd，仅需 root、curl 或 wget 与 tar）上执行：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/acleverfreebird/lightpanel-go/main/scripts/install.sh -o install-lightpanel.sh
+sudo bash install-lightpanel.sh
+```
+
+脚本自动完成：架构检测 → 下载源码现场编译（缺失 Go 工具链时自动安装到 `/usr/local/go`，模块代理失败自动切换 goproxy.cn）→ 安装到 `/opt/lightpanel` → 写入 `config.toml`（0600）→ 创建文件沙箱 `/var/lib/lightpanel/files` → 注册并启动 systemd 服务。
+
+要点：
+
+- 因为需要交互输入管理员密码（12–72 字节，不回显、不落盘明文），请使用上面两步式命令，而不是 `curl … | sudo bash` 管道形式。
+- 重复执行同一命令即为升级：替换二进制并重启服务，保留现有 `config.toml` 与密码。
+- 非交互环境（自动化脚本）预置哈希：`curl -fsSL …/install.sh | sudo LP_PASS_HASH='<bcrypt 哈希>' bash -`；哈希先用 `lightpanel -hash-password` 在有终端的机器上生成。
+- 反向代理/域名访问：`sudo bash install-lightpanel.sh --origin https://panel.example.com`（仍监听 `127.0.0.1`，TLS 由反代终止）。
+- 其他选项：`--port 8888`、`--admin NAME`、`--read-only`、`--release latest`（改用 GitHub Release 预编译二进制，含 sha256 校验）、`--ref TAG`、`--force-config`（重写配置）、`--no-start`；完整列表见 `sudo bash install-lightpanel.sh --help`。
+- GitHub 直连不畅时：`sudo LP_SOURCE_MIRROR='https://ghproxy.example/' bash install-lightpanel.sh`，源码/Release 下载会先尝试镜像前缀再回退官方地址（Go 工具链已内置 golang.google.cn 与阿里云镜像回退，Go 模块代理失败自动切换 goproxy.cn）。
+- 卸载：`curl -fsSL https://raw.githubusercontent.com/acleverfreebird/lightpanel-go/main/scripts/uninstall.sh | sudo bash`（加 `--purge` 一并删除文件沙箱）。
+
 ### 编译（运行服务器无需 Go）
 
 使用最新维护版 Go（最低 1.25），无需 C 工具链：
