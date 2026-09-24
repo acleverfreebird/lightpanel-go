@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="csrf-token" content="{{.CSRF}}">
+  <title>LightPanel · 服务器工作台</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script type="module" src="/static/app.js"></script>
+</head>
+<body data-readonly="{{.ReadOnly}}">
+  <a class="skip-link" href="#workspace">跳到主内容</a>
+  <aside class="sidebar">
+    <a class="brand" href="#overview"><span class="brand-mark">L<span>_</span></span>LightPanel<span class="brand-dot"></span></a>
+    <div class="workspace-label">工作空间 <span>01</span></div>
+    <nav aria-label="管理模块">
+      <button data-tab="overview" class="active"><span aria-hidden="true">▦</span>系统概览</button>
+      <button data-tab="processes"><span aria-hidden="true">≋</span>进程管理</button>
+      <button data-tab="services"><span aria-hidden="true">◈</span>系统服务</button>
+      <button data-tab="files"><span aria-hidden="true">▱</span>文件空间</button>
+      <button data-tab="logs"><span aria-hidden="true">≡</span>系统日志</button>
+      <button data-tab="firewall"><span aria-hidden="true">◇</span>防火墙</button>
+    </nav>
+    <div class="sidebar-bottom"><div class="server-avatar">⌘</div><div><strong id="sidebar-host">当前服务器</strong><small id="sidebar-os">正在连接…</small></div></div>
+    <div class="sidebar-caption">Less overhead. More control.</div>
+  </aside>
+  <div class="shell">
+    <header class="topbar"><div class="crumb-title">工作空间 <span>/</span> <strong id="top-title">系统概览</strong></div><div class="top-actions"><span class="badge" id="connection">连接中</span><span class="user-avatar">{{slice .User 0 1}}</span><span class="account-name">{{.User}}</span><form action="/logout" method="post"><input type="hidden" name="csrf" value="{{.CSRF}}"><button class="text-button" title="退出当前账号">退出</button></form></div></header>
+    <main id="workspace" tabindex="-1">
+      <div class="page-heading"><div><div class="eyebrow">YOUR SERVER, AT A GLANCE</div><h1 id="page-title">系统概览</h1><p id="page-description">掌握资源使用情况，让每一次运维都有据可循。</p></div><div class="page-tools"><span id="updated" class="muted">尚未更新</span><button id="refresh" class="secondary"><span aria-hidden="true">↻</span> 刷新数据</button></div></div>
+      {{if .ReadOnly}}<div class="notice">当前为只读模式。你可以查看数据、日志和下载文件，修改操作已禁用。</div>{{end}}
+      <div id="message" role="status" aria-live="polite" hidden><span id="message-text"></span><button id="message-close" type="button" aria-label="关闭提示">×</button></div>
+      <div id="loading" class="loading-indicator" role="status" hidden>正在更新数据…</div>
+      <section id="overview" aria-label="系统概览">
+        <div class="host-banner"><div><span class="host-icon" aria-hidden="true">▤</span><div><h2 id="host">正在连接服务器</h2><p id="host-subtitle">读取主机信息后显示资源状态</p></div></div><div class="banner-meta"><span class="badge" id="resource-status">等待采样</span><label class="toggle-label"><input id="auto-refresh" type="checkbox" checked>实时更新</label></div></div>
+        <div id="metrics" class="cards"><article class="metric-card skeleton">正在读取 CPU…</article><article class="metric-card skeleton">正在读取内存…</article><article class="metric-card skeleton">正在读取磁盘…</article><article class="metric-card skeleton">正在读取网络…</article></div>
+        <div class="overview-grid"><article class="panel"><div class="panel-heading"><div><h2>资源使用趋势</h2><p>本次打开页面后的最近 60 次采样</p></div><div class="legend"><span class="cpu-dot">CPU</span><span class="memory-dot">内存</span></div></div><div class="chart-wrap"><canvas id="resource-chart" role="img" aria-label="CPU 与内存占用趋势图"></canvas><p id="chart-empty" class="chart-empty">正在收集趋势，下一次更新后显示</p></div><div class="chart-footer"><span id="chart-range">等待采样</span><span>当前</span></div></article><article class="panel"><div class="panel-heading"><div><h2>主机信息</h2><p>这台服务器的运行概况</p></div><span class="mini-icon">⌘</span></div><dl id="host-info" class="info-list"><dt>状态</dt><dd>正在读取…</dd></dl></article></div>
+        <div class="section-heading"><h2>常用操作</h2><span class="muted">更快到达你的工作现场</span></div><div class="quick-grid"><button data-go="processes"><span class="quick-icon">≋</span><span><strong>检查运行进程</strong><small>查找进程与内存占用</small></span><span>↗</span></button><button data-go="services"><span class="quick-icon">◈</span><span><strong>管理系统服务</strong><small>查看状态、启动与重启</small></span><span>↗</span></button><button data-go="logs"><span class="quick-icon">≡</span><span><strong>排查系统日志</strong><small>按服务定位运行问题</small></span><span>↗</span></button></div>
+      </section>
+      <section id="processes" hidden aria-label="进程管理">
+        <article class="panel"><div class="panel-heading"><div><h2>运行中的进程 <span id="process-count" class="count">—</span></h2><p>按内存占用排序 · 每页最多 100 条</p></div></div><form id="process-search" class="toolbar"><div class="search-field"><span aria-hidden="true">⌕</span><input name="q" placeholder="搜索进程名或 PID…" aria-label="搜索进程"></div><button>搜索进程</button><button type="button" id="process-reset" class="secondary">清除</button></form><div id="process-list" class="table-wrap"></div><div class="pagination"><span id="process-page"></span><div><button id="process-prev" class="secondary">← 上一页</button><button id="process-next" class="secondary">下一页 →</button></div></div></article><p class="section-note">优先使用「结束」发送 TERM，让进程正常退出。「强制结束」会立即终止进程，未保存的数据可能丢失。</p>
+      </section>
+      <section id="services" hidden aria-label="系统服务">
+        <article class="panel"><div class="panel-heading"><div><h2>系统服务 <span id="service-count" class="count">—</span></h2><p>已加载的 systemd 服务</p></div></div><div class="toolbar"><div class="search-field"><span aria-hidden="true">⌕</span><input id="service-search" placeholder="按服务名或描述筛选…" aria-label="筛选服务"></div><select id="service-filter" aria-label="服务状态筛选"><option value="all">全部状态</option><option value="active">运行中</option><option value="inactive">未运行</option><option value="failed">失败</option></select></div><div id="service-list" class="table-wrap"></div><div class="pagination"><span id="service-page"></span><div><button id="service-prev" class="secondary">← 上一页</button><button id="service-next" class="secondary">下一页 →</button></div></div></article>
+        <details class="panel manual-service"><summary>按名称管理其他服务</summary><form id="service-form" class="toolbar"><label>完整服务名<input name="name" placeholder="例如 sshd.service" required pattern="[a-zA-Z0-9][a-zA-Z0-9_.@:\-]*\.service" aria-label="服务名"></label><label>操作<select name="action" aria-label="服务操作"><option value="status">查看状态</option><option value="start">启动</option><option value="stop">停止</option><option value="restart">重启</option></select></label><button>执行</button></form></details>
+        <article id="service-detail" class="panel" hidden><div class="panel-heading"><h2 id="service-detail-title">服务详情</h2><button id="service-detail-close" class="text-button">收起</button></div><pre id="service-output" class="output light-output"></pre></article>
+      </section>
+      <section id="files" hidden aria-label="文件空间">
+        <article class="panel"><div class="panel-heading"><div><h2>安全文件空间</h2><p>只显示指定目录中的文件，上传不会覆盖同名文件</p></div><span class="badge">受限目录</span></div><div id="file-breadcrumbs" class="breadcrumbs" aria-label="目录路径"></div><form id="file-path-form" class="toolbar"><button type="button" id="file-up" class="secondary" aria-label="返回上级目录">↑ 上级</button><input name="path" value="." aria-label="相对目录" placeholder="输入相对路径，例如 backups"><button class="secondary">前往</button></form><form id="upload-form" class="upload-strip"><label class="file-picker"><span>＋ 选择文件</span><input type="file" name="file" required aria-label="选择上传文件"></label><span id="upload-name" class="muted">未选择文件 · 最大 32 MiB</span><button data-mutation>上传到当前目录</button></form><div id="file-list" class="table-wrap"></div><div class="pagination"><span id="file-page"></span><div><button id="file-prev" class="secondary">← 上一页</button><button id="file-next" class="secondary">下一页 →</button></div></div></article>
+      </section>
+      <section id="logs" hidden aria-label="系统日志">
+        <article class="panel"><div class="panel-heading"><div><h2>日志查看器</h2><p>查看最近的系统事件，或指定服务排查问题</p></div><span id="log-count" class="count">—</span></div><form id="logs-form" class="toolbar"><label class="grow">服务名称<input name="name" placeholder="留空查看系统日志，如 nginx.service" aria-label="日志服务"></label><label>最近行数<select name="lines" aria-label="日志行数"><option>100</option><option selected>200</option><option>500</option><option>1000</option></select></label><button>读取日志</button></form><div class="log-tools"><input id="log-search" placeholder="在已加载日志中筛选关键词…" aria-label="筛选日志"><label class="toggle-label"><input id="log-wrap" type="checkbox" checked>自动换行</label><button id="log-bottom" class="text-button">到底部 ↓</button></div><pre id="logs-output" class="output log-output" tabindex="0" aria-label="日志内容">正在读取日志…</pre><p class="section-note">日志按需读取，不会持续拉取。筛选只作用于已加载的内容。</p></article>
+      </section>
+      <section id="firewall" hidden aria-label="防火墙">
+        <div class="firewall-grid"><article class="panel"><div class="panel-heading"><div><h2>防火墙状态</h2><p>当前引擎的状态与规则</p></div></div><label>防火墙引擎<select id="firewall-engine" aria-label="防火墙引擎"><option value="">自动检测</option><option value="ufw">UFW</option><option value="firewalld">firewalld</option></select></label><pre id="firewall-output" class="output light-output">正在读取防火墙状态…</pre></article><article class="panel"><div class="panel-heading"><div><h2>管理端口规则</h2><p>仅修改指定的端口与协议</p></div></div><form id="firewall-form" class="stack-form"><div class="form-columns"><label>端口<input name="port" type="number" min="1" max="65535" placeholder="例如 443" required></label><label>协议<select name="protocol"><option>tcp</option><option>udp</option></select></label></div><label>规则操作<select name="action"><option value="allow">允许访问</option><option value="deny">拒绝访问（仅 UFW）</option><option value="remove-allow">移除放行规则</option><option value="remove-deny">移除拒绝规则（仅 UFW）</option></select></label><div id="firewall-help" class="notice">选择引擎后查看规则生效方式。修改管理端口可能中断远程连接。</div><button data-mutation>检查并应用规则</button></form></article></div>
+      </section>
+      <footer class="page-footer"><span>LightPanel <span class="footer-separator">/</span> 轻量服务器工作台</span><span>所有时间均为浏览器本地时间</span></footer>
+    </main>
+  </div>
+  <dialog id="action-dialog" aria-labelledby="dialog-title" aria-describedby="dialog-description"><form id="dialog-form"><div class="dialog-icon" aria-hidden="true">!</div><h2 id="dialog-title"></h2><p id="dialog-description"></p><code id="dialog-target"></code><label id="dialog-input-label" hidden>文件权限<input id="dialog-input" autocomplete="off" inputmode="numeric" pattern="[0-7]{3}" maxlength="3" placeholder="例如 640"><small>三位八进制权限，取值 000–777</small></label><div class="dialog-actions"><button type="button" id="dialog-cancel" class="secondary">取消</button><button id="dialog-confirm">确认操作</button></div></form></dialog>
+</body>
+</html>

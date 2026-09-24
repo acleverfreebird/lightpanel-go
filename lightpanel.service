@@ -1,0 +1,33 @@
+[Unit]
+Description=LightPanel lightweight Linux management panel
+After=network.target
+
+[Service]
+Type=simple
+# Root is required for managing all system services/processes/firewall rules.
+# For a monitoring-only instance use a dedicated user and read_only=true.
+User=root
+WorkingDirectory=/opt/lightpanel
+ExecStart=/opt/lightpanel/lightpanel -c /opt/lightpanel/config.toml
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=15
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=/var/lib/lightpanel/files -/etc/ufw
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LimitNOFILE=1024
+TasksMax=64
+MemoryHigh=64M
+MemoryMax=128M
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

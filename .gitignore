@@ -1,0 +1,5 @@
+/dist/
+/.validation/
+*.test
+*.log
+config.local.toml
