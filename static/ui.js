@@ -32,7 +32,7 @@ export async function api(path, options = {}) {
   if (response.status === 401) { location.assign('/login'); throw new Error('登录已过期，请重新登录。'); }
   if (!response.ok) {
     const detail = (await response.text()).slice(0, 2500).trim();
-    const names = { 403: '操作被拒绝：请检查权限或重新登录', 409: '目标已变化或文件已存在，请刷新后重试', 413: '文件超过 32 MiB 上限', 429: '请求过于频繁，请稍后重试', 501: '服务器不支持这项功能', 502: '系统命令执行失败', 503: '服务器繁忙，请稍后重试', 504: '操作超时，请刷新确认实际状态' };
+    const names = { 403: '操作被拒绝：请检查权限或重新登录', 409: '目标已变化或文件已存在，请刷新后重试', 413: '文件超过大小上限', 429: '请求过于频繁，请稍后重试', 501: '服务器不支持这项功能', 502: '系统命令执行失败', 503: '服务器繁忙，请稍后重试', 504: '操作超时，请刷新确认实际状态' };
     throw new Error(`${names[response.status] || '请求未完成'}（${response.status}）\n${detail}`);
   }
   return response.json();
@@ -80,7 +80,7 @@ export function table(target, headers, rows, emptyText = '暂无条目', emptyHi
   grid.append(head, body);
   host.replaceChildren(grid);
 }
-export function confirmAction({ title, description, target, confirm = '确认操作', danger = true, input = null }) {
+export function confirmAction({ title, description, target, confirm = '确认操作', danger = true, input = null, inputLabel = '文件权限', pattern = '[0-7]{3}', maxLength = 3, placeholder = '例如 640', hint = '三位八进制权限，取值 000–777', numeric = true }) {
   const dialog = $('#action-dialog');
   if (dialog.open) return Promise.resolve(null);
   $('#dialog-title').textContent = title;
@@ -88,19 +88,26 @@ export function confirmAction({ title, description, target, confirm = '确认操
   $('#dialog-target').textContent = target;
   $('#dialog-confirm').textContent = confirm;
   $('#dialog-confirm').className = danger ? 'danger' : '';
+  $('#dialog-input-name').textContent = inputLabel;
   $('#dialog-input-label').hidden = input === null;
-  $('#dialog-input').disabled = input === null;
-  $('#dialog-input').required = input !== null;
-  $('#dialog-input').value = input ?? '';
+  const field = $('#dialog-input');
+  field.disabled = input === null;
+  field.required = input !== null;
+  field.value = input ?? '';
+  field.pattern = pattern;
+  field.maxLength = maxLength;
+  field.placeholder = placeholder;
+  field.inputMode = numeric ? 'numeric' : 'off';
+  $('#dialog-input-hint').textContent = hint;
   return new Promise(resolve => {
     let result = null;
-    const submit = event => { event.preventDefault(); result = input === null ? true : $('#dialog-input').value; dialog.close(); };
+    const submit = event => { event.preventDefault(); result = input === null ? true : field.value; dialog.close(); };
     const cancel = () => dialog.close();
     const closed = () => { $('#dialog-form').removeEventListener('submit', submit); $('#dialog-cancel').removeEventListener('click', cancel); resolve(result); };
     $('#dialog-form').addEventListener('submit', submit);
     $('#dialog-cancel').addEventListener('click', cancel);
     dialog.addEventListener('close', closed, { once: true });
     dialog.showModal();
-    (input === null ? $('#dialog-cancel') : $('#dialog-input')).focus();
+    (input === null ? $('#dialog-cancel') : field).focus();
   });
 }

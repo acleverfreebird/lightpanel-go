@@ -4,6 +4,8 @@ admin_user = "admin"
 # Generate with ./lightpanel -hash-password; or set LP_PASS_HASH.
 password_hash = ""
 sandbox_root = "/var/lib/lightpanel/files"
+# 上传大小上限（MiB），默认 32。
+max_upload_mb = 32
 public_origin = "http://127.0.0.1:8888"
 read_only = false
 tls_cert = ""

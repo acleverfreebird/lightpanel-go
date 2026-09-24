@@ -24,7 +24,7 @@ pkg/sysinfo/command.go       固定工具路径、超时和输出上限
 pkg/sysinfo/metrics.go       CPU/内存/磁盘/网络/负载/运行时间
 pkg/sysinfo/process.go       /proc 进程搜索、分页、pidfd 信号
 pkg/sysinfo/service.go       systemd 列表/状态/启停/重启
-pkg/sysinfo/filemanager.go   受限目录浏览/上传/下载/删除/chmod
+pkg/sysinfo/filemanager.go   受限目录浏览/上传/下载/新建/重命名/编辑/递归删除/chmod
 pkg/sysinfo/logs.go          journalctl 系统与服务日志
 pkg/sysinfo/firewall.go      UFW/firewalld 状态和端口规则
 pkg/**/*_test.go             安全边界与解析测试
@@ -40,9 +40,9 @@ docs/VALIDATION.md           验证记录与已知限制
 
 ### MVP 范围
 
-已实现：系统概览、进程搜索/分页/结束、systemd 服务管理、文件浏览/上传/下载/删除/权限、单管理员登录和可选只读权限、系统/服务日志、防火墙端口规则。Web 终端是需求中的可选项，本版不包含，`/ws/terminal` 返回 404。
+已实现：系统概览、进程搜索/分页/结束、systemd 服务管理、文件浏览/上传/下载/新建文件夹/重命名/在线编辑/递归删除/权限、单管理员登录和可选只读权限、系统/服务日志、防火墙端口规则。Web 终端是需求中的可选项，本版不包含，`/ws/terminal` 返回 404。
 
-安全边界：这是有权限的主机管理工具，不是多租户容器。HTTP 文件操作严格限制在独立目录；目录内不得放置配置、证书、密码哈希、socket、设备节点、bind mount 或共享系统目录。`os.Root` 不隔离挂载点，不能用它代替操作系统沙箱。下载/chmod 拒绝符号链接及多硬链接普通文件；浏览不跟随目录项符号链接；只允许普通文件上传，禁止覆盖；目录删除必须为空。
+安全边界：这是有权限的主机管理工具，不是多租户容器。HTTP 文件操作严格限制在独立目录；目录内不得放置配置、证书、密码哈希、socket、设备节点、bind mount 或共享系统目录。`os.Root` 不隔离挂载点，不能用它代替操作系统沙箱。下载/chmod/编辑读取拒绝符号链接及多硬链接普通文件；浏览不跟随目录项符号链接；只允许普通文件上传，禁止覆盖；目录删除默认要求为空，带 `recursive=true` 时递归删除且不允许删除根；在线编辑只处理 ≤1 MiB 且不含 NUL 的普通文件，保存先写临时文件再原子替换，且拒绝以符号链接为目标的写入。
 
 ## 2. 核心数据流与接口设计
 
@@ -67,10 +67,14 @@ API 默认必须登录。页面 `GET /` 未登录时跳转到 `/login`；API 返
 | POST | `/api/process/kill` | `pid,signal=15或9,start_time`；身份不符返回 409 |
 | GET | `/api/services` | 不带 `name` 列出已加载的服务；带 `.service` 名返回详情 |
 | POST | `/api/service/action` | `name,action=start或stop或restart` |
-| GET | `/api/files` | `path=.` 相对路径，`offset=0`；每页最多 200 条 |
+| GET | `/api/files` | `path=.` 相对路径，`offset=0`；每页最多 200 条，条目含 `modified`（Unix 秒） |
 | GET | `/api/file/download` | `path`；流式附件下载，支持 Range |
-| POST | `/api/file/upload?path=...` | 请求体是文件原始字节，非 multipart；32 MiB 上限，禁止覆盖 |
-| POST | `/api/file/delete` | `path`；不递归删除、不允许删除根 |
+| POST | `/api/file/upload?path=...` | 请求体是文件原始字节，非 multipart；上限 `max_upload_mb`（默认 32 MiB），禁止覆盖 |
+| GET | `/api/file/read` | `path`；读取 ≤1 MiB 文本文件内容用于编辑，含 NUL 或超限返回 400 |
+| POST | `/api/file/write?path=...` | 请求体是新内容（≤1 MiB）；先写临时文件再原子替换，拒绝符号链接目标 |
+| POST | `/api/file/mkdir` | `path`；`MkdirAll` 语义，可一次创建多级目录（0750） |
+| POST | `/api/file/rename` | `path,to`；`to` 为相对路径，可在改名的同时移动，`to` 不得为根 |
+| POST | `/api/file/delete` | `path`；可选 `recursive=true` 递归删除，不允许删除根 |
 | POST | `/api/file/chmod` | `path,mode`；普通文件，三位八进制 000–777，不允许 setuid/setgid |
 | GET | `/api/logs` | `name` 可选；`lines=1..1000` 默认 200 |
 | GET | `/api/firewall` | `engine=ufw或firewalld` 可选；返回状态与规则文本 |
@@ -174,7 +178,7 @@ ssh -N -L 8888:127.0.0.1:8888 user@your-server
 
 仍在本地打开 `http://127.0.0.1:8888`，保持与 `public_origin` 相同。不要用 `localhost` 替代 `127.0.0.1`，除非同时修改配置。
 
-TOML 是可选外部文件：不传 `-c` 时只用安全默认值和环境变量。全部支持覆盖：`LP_HOST`、`LP_PORT`、`LP_ADMIN_USER`、`LP_PASS_HASH`、`LP_SANDBOX_ROOT`、`LP_TLS_CERT`、`LP_TLS_KEY`、`LP_PUBLIC_ORIGIN`、`LP_LOG_FILE`、`LP_READ_ONLY`。生产配置/哈希/私钥应仅允许运行账号读取，且必须位于文件管理目录以外。
+TOML 是可选外部文件：不传 `-c` 时只用安全默认值和环境变量。全部支持覆盖：`LP_HOST`、`LP_PORT`、`LP_ADMIN_USER`、`LP_PASS_HASH`、`LP_SANDBOX_ROOT`、`LP_TLS_CERT`、`LP_TLS_KEY`、`LP_PUBLIC_ORIGIN`、`LP_LOG_FILE`、`LP_READ_ONLY`、`LP_MAX_UPLOAD_MB`（1..2048，默认 32）。生产配置/哈希/私钥应仅允许运行账号读取，且必须位于文件管理目录以外。
 
 ### HTTPS 与反向代理
 

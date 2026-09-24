@@ -24,6 +24,7 @@ type Config struct {
 	PublicOrigin string `toml:"public_origin"`
 	LogFile      string `toml:"log_file"`
 	ReadOnly     bool   `toml:"read_only"`
+	MaxUploadMB  int    `toml:"max_upload_mb"`
 }
 
 func LoadConfig(path string) (*Config, error) {
@@ -56,6 +57,19 @@ func LoadConfig(path string) (*Config, error) {
 			return nil, err
 		}
 		c.ReadOnly = b
+	}
+	if v, ok := os.LookupEnv("LP_MAX_UPLOAD_MB"); ok {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return nil, fmt.Errorf("LP_MAX_UPLOAD_MB: %w", err)
+		}
+		c.MaxUploadMB = n
+	}
+	if c.MaxUploadMB == 0 {
+		c.MaxUploadMB = 32
+	}
+	if c.MaxUploadMB < 1 || c.MaxUploadMB > 2048 {
+		return nil, fmt.Errorf("max_upload_mb must be 1..2048")
 	}
 	if net.ParseIP(c.Host) == nil || c.Port < 1 || c.Port > 65535 {
 		return nil, fmt.Errorf("host must be an IP; port must be 1..65535")

@@ -21,7 +21,7 @@ type zeroReader struct{}
 func (zeroReader) Read(b []byte) (int, error) { clear(b); return len(b), nil }
 func TestUploadLimitCleansPartial(t *testing.T) {
 	dir := t.TempDir()
-	f, e := NewFiles(dir)
+	f, e := NewFiles(dir, MaxUpload)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -38,7 +38,7 @@ func TestUploadLimitCleansPartial(t *testing.T) {
 }
 func TestFileModesAndSymlinkSwap(t *testing.T) {
 	dir := t.TempDir()
-	f, e := NewFiles(dir)
+	f, e := NewFiles(dir, MaxUpload)
 	if e != nil {
 		t.Fatal(e)
 	}

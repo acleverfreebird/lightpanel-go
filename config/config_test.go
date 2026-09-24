@@ -40,6 +40,20 @@ func TestConfigFailsClosed(t *testing.T) {
 	if _, err := LoadConfig(""); err == nil {
 		t.Fatal("root sandbox allowed")
 	}
+	t.Setenv("LP_SANDBOX_ROOT", t.TempDir())
+	t.Setenv("LP_MAX_UPLOAD_MB", "oops")
+	if _, err := LoadConfig(""); err == nil {
+		t.Fatal("invalid upload limit accepted")
+	}
+	t.Setenv("LP_MAX_UPLOAD_MB", "2049")
+	if _, err := LoadConfig(""); err == nil {
+		t.Fatal("oversized upload limit accepted")
+	}
+	t.Setenv("LP_MAX_UPLOAD_MB", "128")
+	c, err = LoadConfig("")
+	if err != nil || c.MaxUploadMB != 128 {
+		t.Fatalf("upload limit: %+v %v", c, err)
+	}
 }
 func TestConfigRejectsUnknownKey(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "test.toml")

@@ -57,7 +57,7 @@ func run() error {
 	if os.Getenv("GOGC") == "" {
 		debug.SetGCPercent(75)
 	}
-	files, err := sysinfo.NewFiles(cfg.SandboxRoot)
+	files, err := sysinfo.NewFiles(cfg.SandboxRoot, int64(cfg.MaxUploadMB)<<20)
 	if err != nil {
 		return fmt.Errorf("open sandbox: %w", err)
 	}

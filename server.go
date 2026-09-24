@@ -37,7 +37,7 @@ func newHandler(cfg *config.Config, files *sysinfo.Files, manager *sysinfo.Manag
 	register := func(pattern string, h http.HandlerFunc) { mux.Handle(pattern, a.Require(audit(cfg.AdminUser, h))) }
 	register("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if err := tmpl.ExecuteTemplate(w, "index.html", map[string]any{"User": cfg.AdminUser, "CSRF": auth.CSRF(r), "ReadOnly": cfg.ReadOnly}); err != nil {
+		if err := tmpl.ExecuteTemplate(w, "index.html", map[string]any{"User": cfg.AdminUser, "CSRF": auth.CSRF(r), "ReadOnly": cfg.ReadOnly, "UploadMB": files.UploadLimit() >> 20}); err != nil {
 			slog.Error("render", "error", err)
 		}
 	})
@@ -51,12 +51,16 @@ func newHandler(cfg *config.Config, files *sysinfo.Files, manager *sysinfo.Manag
 	register("GET /api/files", files.List)
 	register("GET /api/file/download", files.Download)
 	register("POST /api/file/upload", files.Upload)
+	register("GET /api/file/read", files.Read)
+	register("POST /api/file/write", files.Write)
+	register("POST /api/file/mkdir", files.Mkdir)
+	register("POST /api/file/rename", files.Rename)
 	register("POST /api/file/delete", files.Delete)
 	register("POST /api/file/chmod", files.Chmod)
 	register("GET /api/logs", manager.Logs)
 	register("GET /api/firewall", manager.Firewall)
 	register("POST /api/firewall/rule", manager.FirewallAction)
-	return security(cfg, mux), nil
+	return security(cfg, files.UploadLimit(), mux), nil
 }
 
 type statusWriter struct {
@@ -98,6 +102,7 @@ func audit(user string, next http.Handler) http.Handler {
 				slog.Info("audit_end", "user", user, "ip", r.RemoteAddr,
 					"route", r.URL.Path, "status", status, "path", target,
 					"unit", r.Form.Get("name"), "action", r.Form.Get("action"),
+					"to", r.Form.Get("to"), "recursive", r.Form.Get("recursive"),
 					"pid", r.Form.Get("pid"), "signal", r.Form.Get("signal"),
 					"engine", r.Form.Get("engine"), "port", r.Form.Get("port"),
 					"protocol", r.Form.Get("protocol"), "mode", r.Form.Get("mode"))
@@ -106,7 +111,7 @@ func audit(user string, next http.Handler) http.Handler {
 		next.ServeHTTP(sw, r)
 	})
 }
-func security(cfg *config.Config, next http.Handler) http.Handler {
+func security(cfg *config.Config, uploadLimit int64, next http.Handler) http.Handler {
 	slots := make(chan struct{}, 8)
 	origin, _ := url.Parse(cfg.PublicOrigin)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -141,8 +146,11 @@ func security(cfg *config.Config, next http.Handler) http.Handler {
 			return
 		}
 		limit := int64(16 << 10)
-		if r.URL.Path == "/api/file/upload" {
-			limit = sysinfo.MaxUpload
+		switch r.URL.Path {
+		case "/api/file/upload":
+			limit = uploadLimit
+		case "/api/file/write":
+			limit = sysinfo.MaxEdit
 		}
 		r.Body = http.MaxBytesReader(sw, r.Body, limit)
 		next.ServeHTTP(sw, r)

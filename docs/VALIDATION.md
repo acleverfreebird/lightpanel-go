@@ -58,3 +58,14 @@ WSL 从 Windows NTFS 目录执行刚被 Windows 重建的同路径 ELF 时曾发
 - TLS 使用标准库实现，未进行公网证书、ACME 或真实反代部署测试。
 - 可选 Web Terminal 及第二阶段功能未实现。
 - 旧内核缺少 pidfd 时进程结束返回不支持。文件空间须为独立可信目录，不得包含额外挂载；不是多租户隔离机制。
+
+## 2026-09-25 文件管理功能增强复验
+
+文件空间从"浏览/上传/下载/删除/权限"扩展为完整管理能力：新建文件夹（`MkdirAll`，0750）、重命名/移动（`os.Root.Rename`）、在线文本编辑（≤1 MiB、拒绝含 NUL 的二进制、先写临时文件再原子替换、拒绝符号链接目标）、递归删除（显式 `recursive=true`，拒绝删除根）、目录列表新增 `modified` 字段、上传上限改为 `max_upload_mb` 配置（1..2048，默认 32）。前端补充排序、当前页筛选、多文件上传和编辑器对话框，全部动态文本仍走 `textContent`，无内联脚本。
+
+WSL Ubuntu 24.04（Go 1.27.1）实测：
+
+- `go test ./...` 与 `go test -race ./pkg/sysinfo/ ./config/` 全部通过（含新增 `TestFileLifecycle`、`TestWriteTooLarge`、`TestListReportsModified` 与配置项校验用例）。
+- `GOOS=linux go vet ./...`、`gofmt` 通过。
+- 重建 linux-amd64 后 `python3 scripts/smoke.py` 通过：启动 31.8 ms、RSS 约 11.5 MiB、文件往返 1.06 MiB、优雅关闭与审计验证均成功。
+- 保存路径的符号链接契约与全站一致：编辑读取、写入目标均拒绝符号链接（`TestFileLifecycle` 覆盖）。

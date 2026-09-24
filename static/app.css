@@ -198,6 +198,12 @@ summary { cursor: pointer; color: #647589; font-size: 12px; }
 .page-footer { display: flex; align-items: center; justify-content: space-between; color: #a4afbc; font-size: 11px; padding-top: 28px; margin-top: 24px; border-top: 1px solid var(--line); }
 .footer-separator { padding: 0 10px; color: #c4cdd5; }
 dialog { border: 1px solid var(--line); padding: 30px; border-radius: 15px; color: var(--text); width: min(440px,calc(100% - 32px)); box-shadow: 0 25px 90px #0b1c3833; }
+dialog.wide { width: min(760px,calc(100% - 32px)); }
+#editor-text { width: 100%; margin-top: 16px; min-height: 330px; resize: vertical; padding: 13px; border: 1px solid #dfe5ec; border-radius: 7px; background: #fcfdfe; color: var(--text); font: 12px/1.65 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+#editor-text:focus { outline: 3px solid #89cdbb; }
+#editor-dialog small { display: block; margin-top: 12px; line-height: 1.6; }
+.file-tools select { min-width: 120px; }
+.file-tools > button { font-size: 11px; }
 dialog::backdrop { background: #101f32a6; backdrop-filter: blur(2px); }
 .dialog-icon { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 50%; background: #fff0e8; color: #bd7852; font-size: 20px; margin-bottom: 16px; }
 dialog h2 { font-size: 20px; }

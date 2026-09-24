@@ -28,7 +28,7 @@ func testPanel(t *testing.T, readOnly bool) (http.Handler, *config.Config) {
 		t.Fatal(err)
 	}
 	cfg := &config.Config{AdminUser: "admin", PasswordHash: string(hash), SandboxRoot: t.TempDir(), PublicOrigin: "http://localhost", ReadOnly: readOnly}
-	files, err := sysinfo.NewFiles(cfg.SandboxRoot)
+	files, err := sysinfo.NewFiles(cfg.SandboxRoot, sysinfo.MaxUpload)
 	if err != nil {
 		t.Fatal(err)
 	}

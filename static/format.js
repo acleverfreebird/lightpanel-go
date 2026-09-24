@@ -20,6 +20,11 @@ export function parseServices(output) {
     return match ? [{ name: match[1], load: match[2], state: match[3], sub: match[4], description: match[5] }] : [];
   });
 }
+export function time(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return '—';
+  return new Date(n * 1000).toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
+}
 export function normalizePath(value) {
   const path = value.trim();
   return !path || path === '/' ? '.' : path.replace(/^\.\//, '').replace(/\/+$/, '') || '.';
