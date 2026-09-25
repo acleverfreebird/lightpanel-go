@@ -18,6 +18,7 @@
 ```text
 main.go                      启动、TLS、密码哈希 CLI、信号和优雅关闭
 server.go                    嵌入资源、路由、响应安全头、并发限制、审计
+diagnostics.go               已认证运行诊断（身份模式、systemd/工具、helper 可达性）
 config/config.go             严格 TOML 解析、环境变量覆盖、配置校验
 pkg/auth/auth.go             登录限流、session、权限和 CSRF
 pkg/sysinfo/command.go       固定工具路径、超时和输出上限
@@ -41,13 +42,14 @@ lightpanel.service          systemd 单元（非特权面板）
 lightpanel-helper.service   systemd 单元（root helper）
 Makefile                    Linux amd64/arm64 构建与测试
 .github/workflows/release.yml  推送 v* 标签时构建发布产物（amd64/arm64 + SHA256SUMS）
+.github/workflows/ci.yml       push/PR 时运行 vet、race 测试、双架构构建、JS 测试与本机 HTTP 冒烟
 scripts/smoke.py             可选开发验证脚本（非运行依赖）
 docs/VALIDATION.md           验证记录与已知限制
 ```
 
 ### MVP 范围
 
-已实现：系统概览、进程搜索/分页/结束、systemd 服务管理、全盘文件浏览/上传/下载/新建文件夹/重命名/在线编辑/递归删除/权限、版本检查与一键更新、单管理员登录和可选只读权限、系统/服务日志、防火墙端口规则。Web 终端是需求中的可选项，本版不包含，`/ws/terminal` 返回 404。
+已实现：系统概览（指标趋势、主机信息、运行诊断）、进程搜索/分页/结束、systemd 服务管理（已加载与已安装单元、启停/重启/重载/开机自启）、全盘文件浏览/上传/下载/新建文件夹/重命名/在线编辑/递归删除/权限、版本检查与一键更新、单管理员登录和可选只读权限、系统/服务日志、防火墙端口规则。Web 终端是需求中的可选项，本版不包含，`/ws/terminal` 返回 404。
 
 安全边界：这是有权限的主机管理工具，不是多租户容器。文件管理面向**整个文件系统**：所有接口只接受绝对路径，`..` 组件、反斜杠与 NUL 一律拒绝；`/proc`、`/sys`、`/dev`、`/run` 这四个虚拟系统目录拒绝删除与移动。下载/编辑读取只接受普通文件（符号链接若最终指向普通文件也可下载）；chmod 只接受普通文件与目录，且拒绝 setuid/setgid 与符号链接；只允许普通文件上传，禁止覆盖；目录删除默认要求为空，带 `recursive=true` 时递归删除且不允许删除根；在线编辑只处理 ≤1 MiB 且不含 NUL 的普通文件，保存先写临时文件再原子替换，且拒绝以符号链接为目标的写入。进程以 root 运行时这些接口等同 root 文件权限；默认的最小特权模式下面板以专用非特权用户 `lightpanel` 运行（见「最小特权 helper」），文件接口仅等同该用户权限。无论哪种模式，请务必启用 TLS/反代并保管好管理员密码。
 
@@ -72,8 +74,8 @@ API 默认必须登录。页面 `GET /` 未登录时跳转到 `/login`；API 返
 | GET | `/api/metrics` | 主机、CPU%、内存/磁盘字节、负载、uptime 秒、网络 B/s、自身 RSS |
 | GET | `/api/processes` | `q` 按进程名/PID 搜索，`page`；每页 100 条，按 RSS 排序 |
 | POST | `/api/process/kill` | `pid,signal=15或9,start_time`；身份不符返回 409 |
-| GET | `/api/services` | 不带 `name` 列出已加载的服务；带 `.service` 名返回详情 |
-| POST | `/api/service/action` | `name,action=start或stop或restart` |
+| GET | `/api/services` | 不带 `name` 列出已加载与已安装（`list-unit-files` 合并）的服务；带 `.service` 名返回详情 |
+| POST | `/api/service/action` | `name,action=start或stop或restart或reload或enable或disable`；enable/disable 仅改开机启动配置 |
 | GET | `/api/files` | `path=/` 绝对路径，`offset=0`；每页最多 200 条，条目含 `modified`（Unix 秒）与 `symlink` 标记 |
 | GET | `/api/file/download` | `path`；流式附件下载，支持 Range |
 | POST | `/api/file/upload?path=...` | 请求体是文件原始字节，非 multipart；上限 `max_upload_mb`（默认 32 MiB），禁止覆盖 |
@@ -88,6 +90,7 @@ API 默认必须登录。页面 `GET /` 未登录时跳转到 `/login`；API 返
 | GET | `/api/logs` | `name` 可选；`lines=1..1000` 默认 200 |
 | GET | `/api/firewall` | `engine=ufw或firewalld` 可选；返回状态与规则文本 |
 | POST | `/api/firewall/rule` | `engine,port=1..65535,protocol=tcp或udp,action` |
+| GET | `/api/health` | 运行诊断：UID 与模式（root/helper/普通/只读）、systemd 与系统工具可用性、helper 配置与可达性、中文告警；只读投影，不含路径与错误详情 |
 
 普通成功返回 JSON；操作失败返回纯文本与非 2xx。400 参数非法、401 未登录、403 权限/CSRF/Host 拒绝、404 文件不存在、409 文件冲突或进程变化、413 上传过大、429 登录限流、501 工具/内核能力不支持、502 系统命令失败、503 并发满、504 命令超时。服务命令错误不会伪装成成功。
 
