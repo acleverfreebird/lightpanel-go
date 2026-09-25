@@ -17,12 +17,26 @@ const (
 	OpFirewall       = "firewall"        // add/remove a port rule
 	OpKill           = "kill"            // signal a process by pinned identity
 	OpUpdate         = "update"          // verify + install a checksummed update and restart the panel
+	OpSite           = "site"            // managed web-site configuration, gated by allow_sites
 )
 
 var serviceActions = map[string]bool{"start": true, "stop": true, "restart": true, "reload": true, "enable": true, "disable": true}
 
 // ValidServiceAction reports whether action is a helper-permitted systemd action.
 func ValidServiceAction(action string) bool { return serviceActions[action] }
+
+// Site actions for OpSite. Create renders the whole configuration file on the
+// helper side from validated parameters — the panel never ships file content.
+var siteActions = map[string]bool{
+	"create":      true, // kind=static|proxy site; helper writes conf, docroot, symlink, reloads
+	"delete":      true, // remove a marker-bearing managed .conf (and its enabled symlink)
+	"reload":      true, // reload nginx/apache after out-of-band edits
+	"issue-cert":  true, // certbot certificate issuance for one domain
+	"cert-status": true, // read-only `certbot certificates` listing
+}
+
+// ValidSiteAction reports whether action is a helper-permitted site operation.
+func ValidSiteAction(action string) bool { return siteActions[action] }
 
 // Request is one privileged operation. Fields not relevant to Op are ignored.
 type Request struct {
@@ -36,6 +50,15 @@ type Request struct {
 	Signal    int    `json:"signal,omitempty"`
 	StartTime string `json:"start_time,omitempty"`
 	Dir       string `json:"dir,omitempty"`
+	// OpSite fields. Path is only honored for delete and must pass
+	// IsManagedConfPath plus the managed-marker check on the helper side.
+	Path        string `json:"path,omitempty"`
+	Site        string `json:"site,omitempty"`
+	Kind        string `json:"kind,omitempty"`
+	Domain      string `json:"domain,omitempty"`
+	Root        string `json:"root,omitempty"`
+	ProxyTarget string `json:"proxy_target,omitempty"`
+	Email       string `json:"email,omitempty"`
 }
 
 // Response is the helper's verdict. OK=false carries a human-readable Error

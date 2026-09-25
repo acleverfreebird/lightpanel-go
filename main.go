@@ -71,6 +71,7 @@ func runHelper(args []string) error {
 		AllowFirewall: cfg.Helper.AllowFirewall,
 		AllowKill:     cfg.Helper.AllowKill,
 		AllowUpdate:   cfg.Helper.AllowUpdate,
+		AllowSites:    cfg.Helper.AllowSites,
 		PanelUnit:     "lightpanel",
 	}, slog.Default())
 }

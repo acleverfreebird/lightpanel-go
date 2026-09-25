@@ -29,7 +29,9 @@ pkg/sysinfo/filemanager.go   全盘文件浏览/上传/下载/新建/重命名/�
 pkg/sysinfo/update.go        检查 GitHub Release、校验 SHA256、替换二进制并重启服务
 pkg/sysinfo/logs.go          journalctl 系统与服务日志
 pkg/sysinfo/firewall.go      UFW/firewalld 状态和端口规则
+pkg/sysinfo/sites.go         站点管理：环境识别、nginx/Apache 配置解析、静态站点与 Docker 部署
 pkg/helper/protocol.go       最小特权 helper 协议（请求/响应、目录校验）
+pkg/helper/sites.go          站点校验器/配置模板/托管目录规则（面板与 helper 共享）
 pkg/helper/acl.go            按服务/动作的授权 ACL 与防火墙参数白名单
 pkg/helper/client.go         面板侧 helper 客户端（unix socket）
 pkg/helper/server_linux.go   helper 服务端：SO_PEERCRED、白名单执行、更新安装
@@ -49,7 +51,7 @@ docs/VALIDATION.md           验证记录与已知限制
 
 ### MVP 范围
 
-已实现：系统概览（指标趋势、主机信息、运行诊断）、进程搜索/分页/结束、systemd 服务管理（已加载与已安装单元、启停/重启/重载/开机自启）、全盘文件浏览/上传/下载/新建文件夹/重命名/在线编辑/递归删除/权限、版本检查与一键更新、单管理员登录和可选只读权限、系统/服务日志、防火墙端口规则。Web 终端是需求中的可选项，本版不包含，`/ws/terminal` 返回 404。
+已实现：系统概览（指标趋势、主机信息、运行诊断）、进程搜索/分页/结束、systemd 服务管理（已加载与已安装单元、启停/重启/重载/开机自启）、全盘文件浏览/上传/下载/新建文件夹/重命名/在线编辑/递归删除/权限、版本检查与一键更新、单管理员登录和可选只读权限、系统/服务日志、防火墙端口规则、站点管理（自动识别 Nginx/Apache/Docker/certbot，浏览已配置站点，创建静态站点、反向代理或 Docker 容器部署，Let's Encrypt 证书签发，受控删除与重载）。Web 终端是需求中的可选项，本版不包含，`/ws/terminal` 返回 404。
 
 安全边界：这是有权限的主机管理工具，不是多租户容器。文件管理面向**整个文件系统**：所有接口只接受绝对路径，`..` 组件、反斜杠与 NUL 一律拒绝；`/proc`、`/sys`、`/dev`、`/run` 这四个虚拟系统目录拒绝删除与移动。下载/编辑读取只接受普通文件（符号链接若最终指向普通文件也可下载）；chmod 只接受普通文件与目录，且拒绝 setuid/setgid 与符号链接；只允许普通文件上传，禁止覆盖；目录删除默认要求为空，带 `recursive=true` 时递归删除且不允许删除根；在线编辑只处理 ≤1 MiB 且不含 NUL 的普通文件，保存先写临时文件再原子替换，且拒绝以符号链接为目标的写入。进程以 root 运行时这些接口等同 root 文件权限；默认的最小特权模式下面板以专用非特权用户 `lightpanel` 运行（见「最小特权 helper」），文件接口仅等同该用户权限。无论哪种模式，请务必启用 TLS/反代并保管好管理员密码。
 
@@ -90,6 +92,11 @@ API 默认必须登录。页面 `GET /` 未登录时跳转到 `/login`；API 返
 | GET | `/api/logs` | `name` 可选；`lines=1..1000` 默认 200 |
 | GET | `/api/firewall` | `engine=ufw或firewalld` 可选；返回状态与规则文本 |
 | POST | `/api/firewall/rule` | `engine,port=1..65535,protocol=tcp或udp,action` |
+| GET | `/api/sites` | 站点管理总览：`environment`（nginx/apache/docker/certbot 的安装、运行与版本）+ `items`（解析 nginx `sites-enabled`/`conf.d` 与 Apache `sites-enabled`/`conf.d` 得到的 server 块/VirtualHost，以及发布了端口的 Docker 容器） |
+| POST | `/api/sites/create` | `name,engine=auto或nginx或apache或docker,mode=static或proxy,domain,port,root(静态),proxy_target(反代),image,container_port(Docker)`；原生模式由面板或 helper 生成站点配置（静态：try_files；反代：proxy_pass/ProxyPass，Apache 反代需要 mod_proxy），Debian 系写入 sites-available 并软链，RHEL 系写入 conf.d，随后重载引擎；Docker 模式以 `lightpanel-<name>` 启动带 `lightpanel.site` 标签、`--restart unless-stopped` 的容器并映射端口 |
+| POST | `/api/sites/action` | `id,op=start或stop或delete或reload,engine`；Docker 仅允许对带面板标签/名称前缀的容器操作；原生删除仅允许删除含 `# managed by lightpanel` 标记的配置，删除后重载引擎 |
+| GET | `/api/sites/certs` | certbot 证书列表（原文输出）；certbot 未安装返回 501 |
+| POST | `/api/sites/cert` | `domain,email,engine=nginx或apache`；certbot HTTP-01 为单个具体域名签发证书并自动改写站点配置启用 HTTPS（通配符域名需 DNS-01，不支持） |
 | GET | `/api/health` | 运行诊断：UID 与模式（root/helper/普通/只读）、systemd 与系统工具可用性、helper 配置与可达性、中文告警；只读投影，不含路径与错误详情 |
 
 普通成功返回 JSON；操作失败返回纯文本与非 2xx。400 参数非法、401 未登录、403 权限/CSRF/Host 拒绝、404 文件不存在、409 文件冲突或进程变化、413 上传过大、429 登录限流、501 工具/内核能力不支持、502 系统命令失败、503 并发满、504 命令超时。服务命令错误不会伪装成成功。
@@ -99,6 +106,15 @@ API 默认必须登录。页面 `GET /` 未登录时跳转到 `/login`；API 返
 - UFW：`allow`、`deny`、`remove-allow`、`remove-deny`，变更持久保存；不会自动启用防火墙。
 - firewalld：仅 `allow`、`remove-allow`，修改**默认区域的运行时规则**，重载/重启后丢弃。移除一个放行规则不是显式拒绝，故不接受 `deny`。
 - 自动检测优先 firewalld，再 UFW；若同时安装，建议显式选择实际运行的引擎。
+
+站点管理语义：
+
+- 环境`自动识别`：探测 nginx、apache2ctl/httpd、docker 与 certbot 二进制及 systemd 运行状态；Docker 额外校验守护进程可达。
+- 列表：解析 `sites-enabled`/`conf.d` 下的 server 块与 VirtualHost（监听端口、server_name、root、proxy_pass、SSL），并展示发布了宿主端口的 Docker 容器；未发布的容器不出现在面板里。
+- 创建：原生模式支持静态站点（不存在才写入，原子替换、永不覆盖，Debian 系自动建立 sites-enabled 软链）与反向代理（nginx `proxy_pass` + 转发头，Apache `ProxyPass`/`ProxyPassReverse`，需 mod_proxy）；使用默认 `/var/www/<name>` 时自动创建目录和占位首页。Docker 模式固定参数模板启动容器，镜像引用做严格白名单校验。
+- 破坏性边界：原生配置删除要求文件包含 `# managed by lightpanel` 标记且位于托管目录内；Docker 操作仅允许带 `lightpanel.site` 标签或 `lightpanel-` 名称前缀的容器。
+- HTTPS 证书：certbot 探测后可按站点申请 Let's Encrypt 证书（HTTP-01，单个具体域名），`--nginx`/`--apache` 安装器插件自动改写站点配置；证书列表面板展示 `certbot certificates` 原文。
+- 最小特权模式：原生建站/删除/重载/证书签发经 helper 的 `site` 操作（`allow_sites = true`），配置内容由 helper 用共享校验器与模板在本地重新生成，面板不传递文件内容；root 模式由面板直接执行。helper 未授权或权限不足时返回 502/403 并提示。
 
 CPU/网络首次请求用于建立基线，后续返回采样间隔平均值；共享缓存最多每 2 秒采样一次。网络是非 loopback 接口汇总，虚拟网卡可能重复计数；磁盘显示根分区。进程只展示 UID、名称、状态、RSS，不收集可能包含密码的完整命令行。
 
@@ -138,6 +154,7 @@ sudo bash install-lightpanel.sh
 - 非交互环境（自动化脚本）预置哈希：`curl -fsSL …/install.sh | sudo LP_PASS_HASH='<bcrypt 哈希>' bash -`；哈希先用 `lightpanel -hash-password` 在有终端的机器上生成。
 - 反向代理/域名访问：`sudo bash install-lightpanel.sh --origin https://panel.example.com`（仍监听 `127.0.0.1`，TLS 由反代终止）。
 - 其他选项：`--port 8888`、`--admin NAME`、`--read-only`、`--release latest`（改用 GitHub Release 预编译二进制，含 sha256 校验）、`--ref TAG`、`--force-config`（重写配置）、`--no-start`、`--legacy-root`（旧版 root 面板模式，不创建专用用户/不启用 helper）；完整列表见 `sudo bash install-lightpanel.sh --help`。
+- 版本号注入：源码编译安装会自动注入版本号（`--ref` 为标签时用标签名；默认 `main` 分支时查询 GitHub 最新 Release 的标签，查询失败退回 `main`），也可用 `sudo LP_VERSION='v1.2.3' bash install-lightpanel.sh` 显式指定。版本号影响面板内「检查更新」的版本对比，`dev` 版本会跳过对比。
 - GitHub 直连不畅时：`sudo LP_SOURCE_MIRROR='https://ghproxy.example/' bash install-lightpanel.sh`，源码/Release 下载会先尝试镜像前缀再回退官方地址（Go 工具链已内置 golang.google.cn 与阿里云镜像回退，Go 模块代理失败自动切换 goproxy.cn）。
 - 卸载：`curl -fsSL https://raw.githubusercontent.com/acleverfreebird/lightpanel-go/main/scripts/uninstall.sh | sudo bash`（加 `--purge` 一并删除 `/var/lib/lightpanel` 数据目录）。
 
@@ -250,6 +267,7 @@ allowed_users = ["lightpanel"]
 allow_firewall = true   # ufw/firewalld 端口规则（读+写）
 allow_kill = true       # 对任意进程发 SIGTERM/SIGKILL（进程身份经 pidfd 固定）
 allow_update = true     # 在线更新：helper 复核 SHA256 后安装并重启面板
+allow_sites = true      # 托管站点：配置写入（helper 端重新生成内容）、托管删除、引擎重载、certbot
 
 # 按服务/动作细分授权：单元名 = 允许的 systemd 动作（start/stop/restart）。
 # 空表 = 拒绝一切服务控制；"*" 条目把动作授予所有单元（旧版行为）。
@@ -263,6 +281,7 @@ allow_update = true     # 在线更新：helper 复核 SHA256 后安装并重启
 - 服务列表、服务详情、日志读取等只读操作不经 helper。
 - 文件管理以 `lightpanel` 用户权限执行：能看/改什么取决于该用户的 OS 权限。需要 root 全盘文件管理时改用 `--legacy-root`，代价是 HTTP 进程重新获得 root。
 - 在线更新：非 root 面板把 Release 资产下载到 `staging_dir`（默认 `/var/lib/lightpanel/update`），helper 复核目录属主/权限与 SHA256 清单后再换二进制并延迟重启面板；暂存目录必须属于面板用户且不允许组/其他用户可写。
+- 托管站点（`allow_sites`）：面板不发送文件内容——创建请求只带参数（名称、引擎、类型、域名、端口、根目录/反代目标），helper 用与面板完全一致的共享校验器和模板在本地重新生成配置；删除要求目标位于托管目录且含 `# managed by lightpanel` 标记；引擎重载与 certbot 签发（`allow_sites` 整体开关，不做单元级细分）也在 helper 内完成。站点校验原语（`pkg/helper/sites.go`）两端共享，保证判定一致。
 - helper 每次操作写 journald 审计日志（操作、UID、对象、结果）。
 
 `--legacy-root` 保留旧模式；升级已有安装时脚本会在配置缺失 `[helper]` 段时追加通配授权（等价旧版行为），建议随后按需收紧。

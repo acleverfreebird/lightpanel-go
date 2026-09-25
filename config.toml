@@ -22,6 +22,10 @@ allowed_users = ["lightpanel"]
 allow_firewall = true
 allow_kill = true
 allow_update = true
+# allow_sites = true 时 helper 授权托管站点操作：写入站点配置（内容在
+# helper 端从校验后的参数重新生成）、删除带托管标记的配置、重载引擎与
+# certbot 证书签发。最小特权模式下创建站点需要打开它。
+allow_sites = true
 # socket = "/run/lightpanel/helper.sock"
 # staging_dir = "/var/lib/lightpanel/update"
 

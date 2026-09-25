@@ -35,9 +35,14 @@ func (c *Client) Call(ctx context.Context, req Request) (string, error) {
 		return "", fmt.Errorf("%w: helper socket %s: %v (is the lightpanel-helper service running?)", ErrHelper, c.Socket, err)
 	}
 	defer conn.Close()
+	// Baseline 60s; a caller-provided context deadline may extend it (bounded
+	// at 6 minutes) so long ACME issuances survive the round-trip.
 	deadline := time.Now().Add(60 * time.Second)
-	if d2, ok := ctx.Deadline(); ok && d2.Before(deadline) {
+	if d2, ok := ctx.Deadline(); ok && d2.After(deadline) {
 		deadline = d2
+	}
+	if max := time.Now().Add(6 * time.Minute); deadline.After(max) {
+		deadline = max
 	}
 	_ = conn.SetDeadline(deadline)
 	if err = json.NewEncoder(conn).Encode(req); err != nil {

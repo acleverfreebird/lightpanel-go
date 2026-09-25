@@ -135,3 +135,31 @@ WSL Ubuntu 24.04（Go 1.27.1）实测：
 - CI 中 race 与冒烟作业使用真实 Linux runner；诊断端点受登录保护（挂载在认证路由下）。
 
 已知限制不变：未在公网/多发行版实机认证；helper 授权以 helper 进程实际配置为准，诊断面板的可达性检查不代表授权通过。
+
+## 2026-09-25 站点管理功能
+
+新增「站点管理」模块与三个 API（`GET /api/sites`、`POST /api/sites/create`、`POST /api/sites/action`）：
+
+- 环境自动识别：探测 nginx / apache2ctl / httpd / docker 二进制（沿用固定路径白名单与 8 秒超时），systemd `is-active` 判定运行状态，Docker 额外用 `docker version --format {{.Server.Version}}` 校验守护进程可达。
+- 站点发现：解析 nginx `sites-enabled`/`conf.d` 与 Apache `sites-enabled`/`conf.d`/`httpd conf.d` 的 server 块与 VirtualHost（端口、server_name、root、proxy_pass、SSL、面板托管标记），并列出发布了宿主端口的 Docker 容器（`docker ps --format {{json .}}` 逐行 JSON）。
+- 创建：原生引擎按发行版布局写配置（Debian 系 sites-available + 软链，RHEL 系 conf.d），默认根目录 `/var/www/<name>` 自动建目录与占位首页，配置原子写入、不覆盖已有文件，创建后经 helper ACL（或直接）`systemctl reload` 引擎；Docker 引擎以固定参数模板 `docker run -d --name lightpanel-<name> --restart unless-stopped --label lightpanel.site=<name> -p <port>:<cport> <image>` 启动（240 秒超时容纳镜像拉取）。
+- 安全边界（均有单元测试覆盖）：站点名 `^[a-z0-9][a-z0-9-]{0,31}$`；域名标签级校验（允许一个通配符与 `_`）；镜像引用严格正则且经 argv 传递（无 shell）；端口 1–65535；`deleteNativeSite` 校验路径位于托管目录内且文件含 `# managed by lightpanel` 标记，软链与实体文件一并删除；Docker 操作先通过 `docker ps` 核对目标容器带面板标签或 `lightpanel-` 前缀，未托管容器一律 403。
+- 测试：`pkg/sysinfo/sites_test.go` 覆盖 nginx 解析（多 listen 形态、引号、嵌套 location、proxy_pass）、Apache 解析、docker JSON 行解析、全部校验器、环境检测、Docker 创建命令模板、动作护栏（未托管容器 403）、配置模板；`scripts/sites.test.mjs` 校验前端接线与表单 pattern 与服务端一致。`go vet ./...`、`gofmt`、`node --test` 全部通过。
+
+已知限制：
+
+- 非特权面板模式下写 `/etc` 配置受 OS 权限限制（403）；如需在最小特权模式下使用原生站点创建，需为 helper 增加配置写入操作或放宽托管目录权限。Docker 命令以面板进程身份执行，面板用户需在 docker 组或 root 模式。
+- Apache 非标准端口会在配置中写入 `Listen`，重复监听会导致重载失败，错误输出会原样返回给管理员。
+- 重载动作经 helper 时要求 `[helper.services]` 为 `nginx.service` / `apache2.service` / `httpd.service` 授予 `reload`，未授予时返回 502 并提示 ACL 拒绝。
+
+## 2026-09-25 站点管理最小特权支持、反代站点与 Let's Encrypt
+
+在站点管理基础上新增三项能力：
+
+- **helper 托管站点操作**（`OpSite`，`allow_sites = true` 整体授权）：`create`/`delete`/`reload`/`issue-cert`/`cert-status`。面板不发送文件内容——create 请求只携带参数（名称、引擎、kind、域名、端口、根目录、反代目标），helper 用共享原语在本地重新生成配置后原子写入并建立 sites-enabled 软链；delete 由 helper 复核托管目录与 `# managed by lightpanel` 标记；reload 由 helper 自行解析 nginx/apache2/httpd 单元，无需逐单元 ACL。校验器、模板、托管目录清单下沉到 `pkg/helper/sites.go`（无构建标签，两端共享），sysinfo 侧仅保留别名。
+- **反向代理站点**：原生引擎 `mode=proxy` + `proxy_target`（严格校验 `http(s)://host[:port][/path]`，拒绝 userinfo/query/fragment）。nginx 模板生成 `proxy_pass` + Host/X-Real-IP/X-Forwarded-* 头；Apache 模板生成 `ProxyPreserveHost`/`ProxyPass`/`ProxyPassReverse`（需 mod_proxy）。
+- **Let's Encrypt 证书**：环境检测追加 certbot 探测；`GET /api/sites/certs` 返回 `certbot certificates` 原文（未安装 501）；`POST /api/sites/cert` 以 `certbot -n --agree-tos -m <email> -d <domain> --nginx|--apache` 签发（仅具体域名，通配符需 DNS-01 明确拒绝；邮箱格式校验）。超时链路：面板 ctx 300s → helper 连接预算按需放宽至 5 分钟（`issue-cert`/`cert-status`）→ helper `runTimeout` 280s；`Client.Call` 取 ctx 截止时间与 60s 基线的较大者、上限 6 分钟。
+- 修复：`POST /api/sites/action` 原生站点 `delete` 上一版误走 Docker 分支，本轮已补齐（helper 路由或本地删除 + 引擎重载）。
+- 测试：`pkg/helper/sites_test.go`（校验器边界、SiteConf 错误路径、托管路径判定）、`pkg/sysinfo/sites_test.go` 新增反代模板、helper 路由（create/delete）、证书签发与列表端点测试；`scripts/sites.test.mjs` 校验证书面板与 mode 字段接线。`go vet`、`gofmt`、`go test`、`node --test` 全部通过。
+
+配置样例：`config.toml` 的 `[helper]` 段新增 `allow_sites = true`。
