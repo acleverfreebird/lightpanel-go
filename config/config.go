@@ -11,6 +11,8 @@ import (
 
 	"github.com/pelletier/go-toml/v2"
 	"golang.org/x/crypto/bcrypt"
+
+	"lightpanel/pkg/helper"
 )
 
 type Config struct {
@@ -28,6 +30,32 @@ type Config struct {
 	MaxUploadMB  int    `toml:"max_upload_mb"`
 	UpdateRepo   string `toml:"update_repo"`
 	UpdateMirror string `toml:"update_mirror"`
+
+	// Helper 为空表示不使用最小特权 helper：面板保持旧有行为（root 下直接执行
+	// 特权操作）。配置了 [helper] 且面板以非 root 用户运行时，systemd 服务控制、
+	// 防火墙、进程信号与自更新会转发给独立的 helper 进程并按白名单授权。
+	Helper *HelperConfig `toml:"helper"`
+}
+
+// HelperConfig 同时服务于两个进程：面板（Socket 用于转发请求）和
+// `lightpanel helper` 子命令（AllowedUsers/Services/Allow* 为授权边界）。
+type HelperConfig struct {
+	Socket string `toml:"socket"`
+	// AllowedUsers 允许连接 helper socket 的用户；helper 以其中第一个用户的
+	// 属主权限收紧 socket 文件权限，并在每次连接时用 SO_PEERCRED 复核 UID。
+	AllowedUsers []string `toml:"allowed_users"`
+	// Services 按单元细分 systemd 授权："单元名" = 允许的动作列表；
+	// "*" 条目把动作授予所有单元。空表 = 拒绝所有服务控制。
+	Services map[string][]string `toml:"services"`
+	// AllowFirewall 允许读写 ufw/firewalld 端口规则（参数在 helper 端白名单重建）。
+	AllowFirewall bool `toml:"allow_firewall"`
+	// AllowKill 允许对任意进程发送 SIGTERM/SIGKILL（身份经 pidfd 固定）。
+	AllowKill bool `toml:"allow_kill"`
+	// AllowUpdate 允许安装经 SHA256 校验的在线更新并重启面板服务。
+	AllowUpdate bool `toml:"allow_update"`
+	// StagingDir 是非 root 面板下载更新资产的目录（属主必须是面板用户，权限
+	// 不得对组/其他用户可写；helper 安装前会复核）。
+	StagingDir string `toml:"staging_dir"`
 }
 
 func LoadConfig(path string) (*Config, error) {
@@ -60,6 +88,9 @@ func LoadConfig(path string) (*Config, error) {
 			return nil, err
 		}
 		c.ReadOnly = b
+	}
+	if v, ok := os.LookupEnv("LP_HELPER_SOCKET"); ok && c.Helper != nil {
+		c.Helper.Socket = v
 	}
 	if v, ok := os.LookupEnv("LP_MAX_UPLOAD_MB"); ok {
 		n, err := strconv.Atoi(v)
@@ -116,7 +147,36 @@ func LoadConfig(path string) (*Config, error) {
 	if c.TLSCert != "" && u.Scheme != "https" {
 		return nil, fmt.Errorf("TLS requires HTTPS public_origin")
 	}
+	if c.Helper != nil {
+		if c.Helper.Socket == "" {
+			c.Helper.Socket = "/run/lightpanel/helper.sock"
+		}
+		if c.Helper.StagingDir == "" {
+			c.Helper.StagingDir = "/var/lib/lightpanel/update"
+		}
+		if err := validateHelper(c.Helper); err != nil {
+			return nil, err
+		}
+	}
 	return c, nil
+}
+
+func validateHelper(h *HelperConfig) error {
+	if !helper.ValidAbsPath(h.Socket) {
+		return fmt.Errorf("helper.socket must be an absolute cleaned path without backslash or ..")
+	}
+	if !helper.ValidAbsPath(h.StagingDir) {
+		return fmt.Errorf("helper.staging_dir must be an absolute cleaned path without backslash or ..")
+	}
+	if len(h.AllowedUsers) == 0 {
+		return fmt.Errorf("helper.allowed_users must name at least one panel user")
+	}
+	for _, name := range h.AllowedUsers {
+		if !helper.ValidUserName(name) {
+			return fmt.Errorf("helper.allowed_users: invalid user name %q", name)
+		}
+	}
+	return helper.ValidateServicesACL(h.Services)
 }
 
 func isLoopback(host string) bool { return host == "localhost" || net.ParseIP(host).IsLoopback() }

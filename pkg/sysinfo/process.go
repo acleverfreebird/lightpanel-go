@@ -11,6 +11,8 @@ import (
 	"strings"
 
 	"golang.org/x/sys/unix"
+
+	"lightpanel/pkg/helper"
 )
 
 var pageSize = os.Getpagesize()
@@ -114,6 +116,12 @@ func HandleProcessKill(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid PID/signal/process identity", 400)
 		return
 	}
+	// An unprivileged panel cannot signal other users' processes; route the
+	// pinned identity to the helper, which re-checks it as root.
+	if PrivilegedCall != nil {
+		signalViaHelper(w, r, pid, sig)
+		return
+	}
 	// Pin process identity before checking /proc. Never fall back to racy kill(pid).
 	fd, err := unix.PidfdOpen(pid, 0)
 	if err != nil {
@@ -137,6 +145,21 @@ func HandleProcessKill(w http.ResponseWriter, r *http.Request) {
 	}
 	if err = unix.PidfdSendSignal(fd, unix.Signal(sig), nil, 0); err != nil {
 		http.Error(w, "signal failed: "+err.Error(), 409)
+		return
+	}
+	JSON(w, map[string]string{"message": "signal sent; process may take time to exit"})
+}
+
+// signalViaHelper sends a kill through the privileged helper, which repeats
+// the pidfd identity check as root before signaling. Used when the panel
+// itself runs unprivileged.
+func signalViaHelper(w http.ResponseWriter, r *http.Request, pid, sig int) {
+	out, routed, err := privileged(r.Context(), helper.Request{Op: helper.OpKill, PID: pid, Signal: sig, StartTime: r.FormValue("start_time")})
+	if !routed {
+		return
+	}
+	if err != nil {
+		http.Error(w, "signal failed: "+err.Error()+helper.TrimOutput(out), 409)
 		return
 	}
 	JSON(w, map[string]string{"message": "signal sent; process may take time to exit"})

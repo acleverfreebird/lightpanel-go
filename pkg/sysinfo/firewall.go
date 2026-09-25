@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+
+	"lightpanel/pkg/helper"
 )
 
 func firewallArgs(engine, port, protocol, action string) ([]string, error) {
@@ -50,6 +52,16 @@ func engineRequest(r *http.Request) string {
 }
 func (m *Manager) Firewall(w http.ResponseWriter, r *http.Request) {
 	engine := engineRequest(r)
+	// ufw/firewalld status reads need root or polkit grants; unprivileged
+	// panels get them through the helper (still gated by allow_firewall).
+	if out, routed, err := privileged(r.Context(), helper.Request{Op: helper.OpFirewallStatus, Engine: engine}); routed {
+		if err != nil {
+			commandError(w, out, err)
+			return
+		}
+		JSON(w, map[string]string{"engine": engine, "output": out})
+		return
+	}
 	var out string
 	var err error
 	switch engine {
@@ -74,6 +86,17 @@ func (m *Manager) FirewallAction(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 400)
 		return
 	}
+	// The helper rebuilds the argument vector from its own whitelist; the
+	// panel only sends (engine, action, port, protocol).
+	if out, routed, err := privileged(r.Context(), helper.Request{Op: helper.OpFirewall, Engine: engine,
+		Action: r.FormValue("action"), Port: r.FormValue("port"), Protocol: r.FormValue("protocol")}); routed {
+		if err != nil {
+			commandError(w, out, err)
+			return
+		}
+		firewallMessage(w, engine)
+		return
+	}
 	cmd := "ufw"
 	if engine == "firewalld" {
 		cmd = "firewall-cmd"
@@ -83,6 +106,9 @@ func (m *Manager) FirewallAction(w http.ResponseWriter, r *http.Request) {
 		commandError(w, out, err)
 		return
 	}
+	firewallMessage(w, engine)
+}
+func firewallMessage(w http.ResponseWriter, engine string) {
 	message := "rule updated"
 	if engine == "firewalld" {
 		message = "runtime rule updated in default zone; reload/reboot discards it"

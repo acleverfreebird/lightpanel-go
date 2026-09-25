@@ -7,7 +7,10 @@ REPO="${LP_REPO:-acleverfreebird/lightpanel-go}"
 REF="${LP_REF:-main}"
 INSTALL_DIR="/opt/lightpanel"
 SERVICE_NAME="lightpanel"
+HELPER_SERVICE_NAME="lightpanel-helper"
 UNIT="/etc/systemd/system/${SERVICE_NAME}.service"
+HELPER_UNIT="/etc/systemd/system/${HELPER_SERVICE_NAME}.service"
+PANEL_USER="${LP_PANEL_USER:-lightpanel}"
 GO_FALLBACK="go1.25.0"
 
 HOST="127.0.0.1"
@@ -19,6 +22,7 @@ PASS_HASH="${LP_PASS_HASH:-}"
 RELEASE=""
 FORCE_CONFIG=0
 NO_START=0
+LEGACY_ROOT=0
 
 usage() {
   cat <<'USAGE'
@@ -36,6 +40,7 @@ LightPanel 一键安装/升级脚本（Linux amd64/arm64，需 root，建议 sys
   --ref REF             构建分支或标签（默认 main）
   --release TAG         使用 GitHub Release 预编译二进制（latest 或具体 tag）；
                         默认下载源码现场编译并自动安装缺失的 Go 工具链
+  --legacy-root         旧模式：面板进程以 root 运行，不创建专用用户/不启用 helper
   --force-config        覆盖已有 /opt/lightpanel/config.toml（默认保留原配置）
   --no-start            仅安装文件，不启动/重启服务
   -h, --help            显示本帮助
@@ -64,6 +69,7 @@ while [ $# -gt 0 ]; do
     --repo)          REPO="${2:?--repo 需要参数}"; shift 2;;
     --ref)           REF="${2:?--ref 需要参数}"; shift 2;;
     --release)       RELEASE="${2:?--release 需要参数}"; shift 2;;
+    --legacy-root)   LEGACY_ROOT=1; shift;;
     --force-config)  FORCE_CONFIG=1; shift;;
     --no-start)      NO_START=1; shift;;
     -h|--help)       usage; exit 0;;
@@ -211,10 +217,11 @@ download_release() {
 write_config() {
   local dst="$INSTALL_DIR/config.toml" hash="$1"
   awk -v host="$HOST" -v port="$PORT" -v user="$ADMIN_USER" -v hash="$hash" \
-      -v origin="${ORIGIN:-http://127.0.0.1:$PORT}" -v ro="$READ_ONLY" '
+      -v origin="${ORIGIN:-http://127.0.0.1:$PORT}" -v ro="$READ_ONLY" \
+      -v panel_user="$PANEL_USER" '
     { gsub(/__HOST__/, host); gsub(/__PORT__/, port); gsub(/__USER__/, user);
       gsub(/__HASH__/, hash); gsub(/__ORIGIN__/, origin);
-      gsub(/__RO__/, ro); print }' <<'EOF' > "$dst"
+      gsub(/__RO__/, ro); gsub(/__PANEL_USER__/, panel_user); print }' <<'EOF' > "$dst"
 host = "__HOST__"
 port = __PORT__
 admin_user = "__USER__"
@@ -224,8 +231,46 @@ read_only = __RO__
 tls_cert = ""
 tls_key = ""
 log_file = ""
+
+# 最小特权 helper：root 级操作由独立的 lightpanel-helper 服务执行，
+# 并按下列白名单授权。详见 README「最小特权 helper」。
+[helper]
+allowed_users = ["__PANEL_USER__"]
+# 端口规则（ufw/firewalld，参数在 helper 端白名单重建）
+allow_firewall = true
+# 结束进程（SIGTERM/SIGKILL，进程身份经 pidfd 固定）
+allow_kill = true
+# 在线更新（helper 复核 SHA256 后安装并重启面板）
+allow_update = true
+
+# 按服务/动作细分授权：单元名 = 允许的 systemd 动作。
+# 空列表 = 拒绝一切服务控制（最小特权默认）。按需添加，例如：
+# [helper.services]
+# "nginx.service" = ["start", "stop", "restart"]
+# 或用 "*" = ["start", "stop", "restart"] 放开所有单元（旧版行为）。
+[helper.services]
 EOF
   chmod 0600 "$dst"
+}
+
+# 升级路径：旧配置没有 [helper] 段时追加默认段。为保持升级后服务控制
+# 仍可用，先用 "*" 通配放开（等价旧版 root 行为），管理员可再收紧。
+append_helper_config() {
+  local dst="$INSTALL_DIR/config.toml"
+  grep -q '^\[helper\]' "$dst" 2>/dev/null && return 0
+  cat >> "$dst" <<EOF
+
+[helper]
+allowed_users = ["$PANEL_USER"]
+allow_firewall = true
+allow_kill = true
+allow_update = true
+
+# 升级默认：通配放开全部单元（旧版 root 行为）。建议改为按需授权，例如
+# 删除 "*" 行并逐个列出单元。
+[helper.services]
+"*" = ["start", "stop", "restart"]
+EOF
 }
 
 existing_hash() {
@@ -233,15 +278,63 @@ existing_hash() {
 }
 
 install_unit() {
-  cat > "$UNIT" <<'EOF'
+  if [ "$LEGACY_ROOT" -eq 0 ]; then
+    cat > "$UNIT" <<'EOF'
 [Unit]
 Description=LightPanel lightweight Linux management panel
 After=network.target
 
 [Service]
 Type=simple
-# Root is required for managing all system services/processes/firewall rules.
-# For a monitoring-only instance use a dedicated user and read_only=true.
+# 最小特权模式：面板以专用非特权用户 lightpanel 运行，root 级操作
+# （服务控制/防火墙/进程信号/在线更新）转发给 lightpanel-helper 服务，
+# 并由 helper 按 [helper] 配置中的白名单（服务/动作）授权。
+User=__PANEL_USER__
+Group=__PANEL_USER__
+__JOURNAL_GROUP__
+WorkingDirectory=/opt/lightpanel
+ExecStart=/opt/lightpanel/lightpanel -c /opt/lightpanel/config.toml
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=15
+UMask=0077
+NoNewPrivileges=true
+# 文件管理需要访问运行用户可读写的整个文件系统，因此不启用
+# ProtectSystem/ProtectHome/PrivateTmp/ReadWritePaths 等文件系统隔离。
+# 面板进程不需要任何 capability。
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LimitNOFILE=1024
+TasksMax=64
+MemoryHigh=64M
+MemoryMax=128M
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    if getent group systemd-journal >/dev/null 2>&1; then
+      sed -i 's/^__JOURNAL_GROUP__$/SupplementaryGroups=systemd-journal/' "$UNIT"
+    else
+      sed -i '/^__JOURNAL_GROUP__$/d' "$UNIT"
+    fi
+    sed -i "s/__PANEL_USER__/$PANEL_USER/g" "$UNIT"
+  else
+    cat > "$UNIT" <<'EOF'
+[Unit]
+Description=LightPanel lightweight Linux management panel
+After=network.target
+
+[Service]
+Type=simple
+# Legacy root mode: the panel process itself runs as root and manages all
+# system services/processes/firewall rules directly; [helper] is unused.
 User=root
 WorkingDirectory=/opt/lightpanel
 ExecStart=/opt/lightpanel/lightpanel -c /opt/lightpanel/config.toml
@@ -266,10 +359,61 @@ StandardError=journal
 [Install]
 WantedBy=multi-user.target
 EOF
+  fi
   chmod 0644 "$UNIT"
+
+  if [ "$LEGACY_ROOT" -eq 0 ]; then
+    cat > "$HELPER_UNIT" <<'EOF'
+[Unit]
+Description=LightPanel privileged helper (least-privilege operations)
+# 面板通过 /run/lightpanel/helper.sock 转发白名单内的特权请求。
+After=network.target
+
+[Service]
+Type=simple
+# helper 是唯一以 root 运行的组件：只暴露 [helper] 白名单内的操作
+# （按服务/动作细分授权），并通过 SO_PEERCRED 校验连接者身份。
+User=root
+Group=root
+RuntimeDirectory=lightpanel
+RuntimeDirectoryMode=0750
+ExecStart=/opt/lightpanel/lightpanel helper -c /opt/lightpanel/config.toml
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=15
+UMask=0077
+NoNewPrivileges=true
+# helper 需要写 /opt/lightpanel（在线更新换二进制）与 /etc/ufw（ufw 规则）；
+# 其余文件系统一律只读。firewalld 走 D-Bus，不需要本地写权限。
+ProtectSystem=strict
+ReadWritePaths=/opt/lightpanel /etc/ufw
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LimitNOFILE=256
+TasksMax=32
+MemoryHigh=32M
+MemoryMax=64M
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    chmod 0644 "$HELPER_UNIT"
+  else
+    rm -f "$HELPER_UNIT"
+    systemctl disable "$HELPER_SERVICE_NAME" >/dev/null 2>&1 || true
+  fi
   systemctl daemon-reload
   [ "$NO_START" -eq 1 ] && return 0
   systemctl enable "$SERVICE_NAME" >/dev/null 2>&1 || true
+  if [ "$LEGACY_ROOT" -eq 0 ]; then
+    systemctl enable "$HELPER_SERVICE_NAME" >/dev/null 2>&1 || true
+    systemctl restart "$HELPER_SERVICE_NAME"
+  fi
   systemctl restart "$SERVICE_NAME"
   sleep 1
   if systemctl is-active --quiet "$SERVICE_NAME"; then
@@ -277,6 +421,22 @@ EOF
   else
     log "警告: 服务未在运行，最近日志如下（也可: journalctl -u $SERVICE_NAME -n 50 --no-pager）"
     journalctl -u "$SERVICE_NAME" -n 20 --no-pager || true
+  fi
+  if [ "$LEGACY_ROOT" -eq 0 ]; then
+    if systemctl is-active --quiet "$HELPER_SERVICE_NAME"; then
+      log "helper 服务已启动（lightpanel-helper）"
+    else
+      log "警告: helper 未在运行，服务控制等特权操作将不可用（journalctl -u $HELPER_SERVICE_NAME -n 20 --no-pager）"
+    fi
+  fi
+}
+
+create_panel_user() {
+  if ! getent passwd "$PANEL_USER" >/dev/null 2>&1; then
+    log "创建系统用户 $PANEL_USER（面板进程将以其身份运行）"
+    useradd --system --home-dir "$INSTALL_DIR" --no-create-home \
+      --shell /usr/sbin/nologin "$PANEL_USER" \
+      || fail "创建系统用户 $PANEL_USER 失败"
   fi
 }
 
@@ -288,6 +448,9 @@ else
 fi
 
 # ---- 安装 ----
+if [ "$LEGACY_ROOT" -eq 0 ]; then
+  create_panel_user
+fi
 log "安装目录 $INSTALL_DIR"
 install -d -m 0750 "$INSTALL_DIR"
 install -m 0755 "$WORK/lightpanel" "$INSTALL_DIR/lightpanel"
@@ -297,6 +460,9 @@ if [ -f "$INSTALL_DIR/config.toml" ] && [ "$FORCE_CONFIG" -eq 0 ]; then
   log "保留已有 $INSTALL_DIR/config.toml（重复执行即升级；重写配置请加 --force-config）"
   if [ -z "$(existing_hash)" ]; then
     log "已有配置缺少 password_hash，需要补设密码"
+  fi
+  if [ "$LEGACY_ROOT" -eq 0 ]; then
+    append_helper_config
   fi
 else
   CONFIG_NEW=1
@@ -313,7 +479,23 @@ if [ "$CONFIG_NEW" -eq 1 ]; then
     fi
   fi
   write_config "$PASS_HASH"
-  log "已写入 $INSTALL_DIR/config.toml（0600，仅 root 可读）"
+  if [ "$LEGACY_ROOT" -eq 1 ]; then
+    log "已写入 $INSTALL_DIR/config.toml（0600，仅 root 可读）"
+  else
+    log "已写入 $INSTALL_DIR/config.toml（0600；非 root 模式下见下方权限说明）"
+  fi
+fi
+
+if [ "$LEGACY_ROOT" -eq 0 ]; then
+  # 面板（lightpanel 用户）需要读取配置、执行二进制；二进制与配置本身仍归
+  # root 所有，配置对运行用户只读。更新暂存目录归运行用户所有。
+  chown root:"$PANEL_USER" "$INSTALL_DIR" 2>/dev/null || true
+  chmod 0750 "$INSTALL_DIR"
+  chown root:root "$INSTALL_DIR/lightpanel"
+  chmod 0755 "$INSTALL_DIR/lightpanel"
+  chown root:"$PANEL_USER" "$INSTALL_DIR/config.toml"
+  chmod 0640 "$INSTALL_DIR/config.toml"
+  install -d -o "$PANEL_USER" -g "$PANEL_USER" -m 0750 /var/lib/lightpanel/update
 fi
 
 # ---- systemd ----
@@ -325,12 +507,19 @@ fi
 
 # ---- 完成摘要 ----
 FINAL_ORIGIN="${ORIGIN:-http://127.0.0.1:$PORT}"
+if [ "$LEGACY_ROOT" -eq 0 ]; then
+  MODE_NOTE="运行模式: 最小特权（面板用户 $PANEL_USER；root 操作由 lightpanel-helper 按白名单执行）
+  服务控制授权: 编辑 $INSTALL_DIR/config.toml 的 [helper.services]（默认拒绝一切服务控制）"
+else
+  MODE_NOTE="运行模式: 旧版 root（--legacy-root；[helper] 不参与）"
+fi
 cat <<SUMMARY
 
 [lightpanel] 安装完成
   二进制:   $INSTALL_DIR/lightpanel ($ARCH)
   配置:     $INSTALL_DIR/config.toml
   访问地址: $FINAL_ORIGIN
+  $MODE_NOTE
 
 远程访问（SSH 隧道，在本地机器执行）:
   ssh -N -L $PORT:127.0.0.1:$PORT <user>@<server>
@@ -338,6 +527,7 @@ cat <<SUMMARY
 
 常用命令:
   systemctl status $SERVICE_NAME
+  systemctl status $HELPER_SERVICE_NAME
   journalctl -u $SERVICE_NAME -f
   修改密码: $INSTALL_DIR/lightpanel -hash-password 后更新 config.toml 并 systemctl restart $SERVICE_NAME
 SUMMARY

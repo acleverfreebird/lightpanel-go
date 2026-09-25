@@ -21,6 +21,8 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"lightpanel/pkg/helper"
 )
 
 const (
@@ -262,12 +264,6 @@ func UpdateApply(w http.ResponseWriter, r *http.Request) {
 }
 
 func applyUpdate(w http.ResponseWriter, r *http.Request) {
-	exe, err := executablePath()
-	if err != nil {
-		commandError(w, "", err)
-		return
-	}
-	dir := filepath.Dir(exe)
 	asset := "lightpanel-linux-" + runtime.GOARCH
 	rel, err := fetchRelease(r.Context(), r.FormValue("tag"))
 	if err != nil {
@@ -278,8 +274,20 @@ func applyUpdate(w http.ResponseWriter, r *http.Request) {
 		JSON(w, UpdateStatus{Current: BuildVersion, Latest: rel.TagName})
 		return
 	}
+	// An unprivileged panel cannot replace the binary or restart the unit;
+	// it stages the downloads and the helper verifies, installs, restarts.
+	if PrivilegedCall != nil {
+		stageUpdate(w, r, rel.TagName, asset)
+		return
+	}
 	// Download into the binary's own directory so the final rename is atomic
 	// on the same filesystem and survives a crash mid-update.
+	exe, err := executablePath()
+	if err != nil {
+		commandError(w, "", err)
+		return
+	}
+	dir := filepath.Dir(exe)
 	tmp, err := os.CreateTemp(dir, ".lightpanel-update-*")
 	if err != nil {
 		commandError(w, "", err)
@@ -324,4 +332,72 @@ func applyUpdate(w http.ResponseWriter, r *http.Request) {
 	slog.Info("update_applied", "from", BuildVersion, "to", rel.TagName)
 	scheduleRestart()
 	JSON(w, UpdateStatus{Current: rel.TagName, Latest: rel.TagName, Update: false})
+}
+
+// stageUpdate downloads the release assets into the configured staging
+// directory and hands verification + installation to the helper. The helper
+// re-verifies the SHA256 manifest before installing, so a compromised panel
+// process cannot ship an arbitrary binary without also breaking the HTTPS
+// release source and the checksum manifest together.
+func stageUpdate(w http.ResponseWriter, r *http.Request, tag, asset string) {
+	dir := UpdateStagingDir
+	if dir == "" {
+		commandError(w, "", errors.New("unprivileged update requires helper.staging_dir"))
+		return
+	}
+	if err := os.MkdirAll(dir, 0750); err != nil {
+		commandError(w, "", err)
+		return
+	}
+	assetPath := filepath.Join(dir, asset)
+	tmp, err := os.CreateTemp(dir, ".lightpanel-update-*")
+	if err != nil {
+		commandError(w, "", err)
+		return
+	}
+	defer os.Remove(tmp.Name())
+	if err = downloadToFile(r.Context(), releaseAssetURL(tag, asset), tmp, maxUpdateAsset); err != nil {
+		commandError(w, "", err)
+		return
+	}
+	if err = tmp.Close(); err != nil {
+		commandError(w, "", err)
+		return
+	}
+	if err = os.Rename(tmp.Name(), assetPath); err != nil {
+		commandError(w, "", err)
+		return
+	}
+	manifest := filepath.Join(dir, "SHA256SUMS")
+	tmpManifest, err := os.CreateTemp(dir, ".SHA256SUMS-*")
+	if err != nil {
+		commandError(w, "", err)
+		return
+	}
+	defer os.Remove(tmpManifest.Name())
+	if err = downloadToFile(r.Context(), releaseAssetURL(tag, "SHA256SUMS"), tmpManifest, maxUpdateManifest); err != nil {
+		tmpManifest.Close()
+		commandError(w, "", err)
+		return
+	}
+	if err = tmpManifest.Close(); err != nil {
+		commandError(w, "", err)
+		return
+	}
+	if err = os.Rename(tmpManifest.Name(), manifest); err != nil {
+		commandError(w, "", err)
+		return
+	}
+	if err = verifyChecksum(dir, asset, assetPath); err != nil {
+		commandError(w, "", err)
+		return
+	}
+	slog.Info("update_staged", "from", BuildVersion, "to", tag)
+	if _, err = PrivilegedCall(r.Context(), helper.Request{Op: helper.OpUpdate, Dir: dir}); err != nil {
+		commandError(w, "", err)
+		return
+	}
+	// The helper restarts the panel unit with a short delay so this response
+	// can flush first.
+	JSON(w, UpdateStatus{Current: tag, Latest: tag, Update: false})
 }

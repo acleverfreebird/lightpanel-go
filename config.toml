@@ -14,3 +14,18 @@ update_mirror = ""
 tls_cert = ""
 tls_key = ""
 log_file = ""
+
+# 最小特权 helper：非 root 面板把 root 级操作转发给 lightpanel-helper 服务，
+# 由其按下列白名单授权执行。面板以 root 运行时本段被忽略。详见 README。
+[helper]
+allowed_users = ["lightpanel"]
+allow_firewall = true
+allow_kill = true
+allow_update = true
+# socket = "/run/lightpanel/helper.sock"
+# staging_dir = "/var/lib/lightpanel/update"
+
+# 按服务/动作细分授权：单元名 = 允许的 systemd 动作（start/stop/restart）。
+# 空表 = 拒绝一切服务控制；"*" 条目把动作授予所有单元（旧版行为）。
+[helper.services]
+"nginx.service" = ["start", "stop", "restart"]

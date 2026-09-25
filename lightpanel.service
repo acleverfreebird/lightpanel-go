@@ -4,9 +4,15 @@ After=network.target
 
 [Service]
 Type=simple
-# Root is required for managing all system services/processes/firewall rules.
-# For a monitoring-only instance use a dedicated user and read_only=true.
-User=root
+# 最小特权模式：面板以专用非特权用户 lightpanel 运行，root 级操作
+# （服务控制/防火墙/进程信号/在线更新）转发给 lightpanel-helper 服务，
+# 并由 helper 按 [helper] 配置中的白名单（服务/动作）授权。
+# 若需要面板本身以 root 运行（例如全盘 root 文件管理），把 User 改回 root；
+# 此时 [helper] 不参与，行为与旧版本一致。
+User=lightpanel
+Group=lightpanel
+# journalctl 日志读取需要 systemd-journal 组；无该组的系统可删除此行。
+SupplementaryGroups=systemd-journal
 WorkingDirectory=/opt/lightpanel
 ExecStart=/opt/lightpanel/lightpanel -c /opt/lightpanel/config.toml
 Restart=on-failure
@@ -14,8 +20,12 @@ RestartSec=3
 TimeoutStopSec=15
 UMask=0077
 NoNewPrivileges=true
-# 文件管理需要访问整个文件系统（/home、/etc、/tmp 等），因此不启用
+# 文件管理需要访问运行用户可读写的整个文件系统，因此不启用
 # ProtectSystem/ProtectHome/PrivateTmp/ReadWritePaths 等文件系统隔离。
+# 面板进程不需要任何 capability。
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true

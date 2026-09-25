@@ -85,3 +85,40 @@ WSL Ubuntu 24.04（Go 1.27.1）实测：
 ## 2026-09-25 文件管理改为全盘访问复验
 
 文件管理从 `sandbox_root` 受限目录改为管理**整个文件系统**：所有接口只接受绝对路径（内部仍经 `os.Root` 钉住 `/` 走 openat，`..` 组件、反斜杠、NUL 拒绝）；目录列表新增 `symlink` 字段并返回归一化绝对路径；符号链接若最终指向普通文件允许下载（`/bin/sh` 等）；chmod 扩展到目录并继续拒绝符号链接与 setuid/setgid；`/proc`、`/sys`、`/dev`、`/run` 拒绝删除与移动；前端面包屑以 `/` 为根，支持绝对路径跳转、绝对路径重命名/移动与新建多级目录。`sandbox_root` 配置项废弃（旧配置仍可解析，字段被忽略），systemd 单元移除 `ProtectSystem`/`ProtectHome`/`PrivateTmp`/`ReadWritePaths` 以放行全盘访问，保留 `NoNewPrivileges` 与内核防护项。
+
+---
+
+## 最小特权 helper 验证记录
+
+日期：2026-09-25。Windows 交叉编译，WSL Ubuntu 24.04（systemd 运行中）实际执行。
+
+## 实现概要
+
+- 面板进程默认以非特权系统用户 `lightpanel` 运行（无任何 capability），HTTP 攻击面与 root 权限分离。
+- 新增同二进制子命令 `lightpanel helper`（root systemd 服务 `lightpanel-helper`），监听 `/run/lightpanel/helper.sock`；每次连接用 `SO_PEERCRED` 复核对端 UID，仅允许 `[helper]` 中 `allowed_users` 与 root。
+- 细分授权（helper 端强制执行，面板不可绕过）：`[helper.services]` 按单元 × 动作（start/stop/restart）白名单，`*` 通配可选；`allow_firewall`、`allow_kill`、`allow_update` 三个独立能力开关。防火墙参数由 helper 按端口/协议白名单重建，不接受面板转发的原始 argv；kill 重复 pidfd 身份固定；更新先复核 staging 目录属主/权限与 SHA256 清单再原子安装并延迟重启面板。
+- root 模式（`--legacy-root` 或手工 User=root）完全忽略 `[helper]`，行为与旧版本一致；非 root 且未配置 helper 时特权操作返回明确错误，其余只读功能不受影响。
+
+## 自动检查
+
+- `go test -race -count=1 ./...`（5 个包全部通过，含新增 pkg/helper 的 ACL/白名单/协议测试与 config 的 [helper] 校验测试）。
+- `go vet ./...`：通过。Linux amd64/arm64 静态构建通过。
+- `bash -n scripts/install.sh scripts/uninstall.sh`：通过。
+
+## WSL 实机端到端验证
+
+root 运行 `lightpanel helper -c <配置>`，非特权用户 `lp-panel`（uid 1001）运行面板，真实 systemd 环境：
+
+- helper socket 创建为 `srw-rw---- lp-panel:lp-panel`；helper 拒绝在非 root 属主或组/他可写的目录中创建 socket。
+- 面板日志出现 `helper_mode_enabled`，进程以 uid 1001 运行。
+- 未授权用户连接 socket：在文件权限层即被拒绝（connect: permission denied）。
+- 授权用户请求未列入白名单的 `sshd.service restart`：helper 返回 "not granted in helper.services"，面板转为 502，helper 审计日志记录 `ok:false`。
+- 授权用户请求白名单内的 `cron.service restart`（`[helper.services]` 仅授予该单元该动作）：面板 HTTP 返回 200，helper 以 root 实际重启了 cron.service（`systemctl status` 确认），审计日志 `uid=1001 unit=cron.service action=restart ok:true`。
+- HTTP 全链路：登录 → CSRF → `POST /api/service/action` → helper 路由，无需 systemd 单元即可在无 systemd 管理权限的用户下完成服务控制。
+
+已知限制与权衡：
+
+- 非特权模式下，文件管理以 `lightpanel` 用户 OS 权限为上限；需要 root 全盘文件操作时使用 `--legacy-root`。
+- 日志读取依赖 `systemd-journal` 组（单元 SupplementaryGroups 已声明）。
+- helper 的更新安装信任面板转发的 Release 资产 + SHA256 清单（均来自 HTTPS Release 源），并复核 staging 目录属主与权限；上游 Release 被篡改时该防线同样失效，与 root 模式的自更新信任链一致。
+- helper 单元启用 `ProtectSystem=strict`（仅 `/opt/lightpanel`、`/etc/ufw` 可写）；ufw 依赖内核模块按需加载的场景未逐一验证，异常时可在单元中放宽。

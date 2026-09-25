@@ -20,6 +20,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/term"
 	"lightpanel/config"
+	"lightpanel/pkg/helper"
 	"lightpanel/pkg/sysinfo"
 )
 
@@ -28,10 +29,50 @@ var version = "dev"
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+	if len(os.Args) > 1 && os.Args[1] == "helper" {
+		if err := runHelper(os.Args[2:]); err != nil {
+			slog.Error("fatal", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(); err != nil {
 		slog.Error("fatal", "error", err)
 		os.Exit(1)
 	}
+}
+
+// runHelper is the privileged least-privilege helper: a root process that
+// serves only the whitelisted, ACL-checked operations on its unix socket so
+// the network-facing panel never needs root. Run via
+// `lightpanel helper -c /opt/lightpanel/config.toml` (lightpanel-helper.service).
+func runHelper(args []string) error {
+	fs := flag.NewFlagSet("helper", flag.ExitOnError)
+	configPath := fs.String("c", "", "TOML config (required for the helper)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cfg, err := config.LoadConfig(*configPath)
+	if err != nil {
+		return err
+	}
+	if cfg.Helper == nil {
+		return fmt.Errorf("helper mode requires a [helper] config section")
+	}
+	if os.Geteuid() != 0 {
+		return fmt.Errorf("the helper must run as root to perform privileged operations")
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return helper.Run(ctx, helper.ServerConfig{
+		Socket:        cfg.Helper.Socket,
+		AllowedUsers:  cfg.Helper.AllowedUsers,
+		Services:      cfg.Helper.Services,
+		AllowFirewall: cfg.Helper.AllowFirewall,
+		AllowKill:     cfg.Helper.AllowKill,
+		AllowUpdate:   cfg.Helper.AllowUpdate,
+		PanelUnit:     "lightpanel",
+	}, slog.Default())
 }
 func run() error {
 	configPath := flag.String("c", "", "TOML config (empty: environment/defaults)")
@@ -68,6 +109,17 @@ func run() error {
 		return fmt.Errorf("open filesystem root: %w", err)
 	}
 	defer files.Close()
+	// Least-privilege mode: an unprivileged panel forwards root-level
+	// operations to the helper, which authorizes them per service/action.
+	// A root panel keeps the legacy direct-execution behavior.
+	if cfg.Helper != nil && os.Geteuid() != 0 {
+		client := &helper.Client{Socket: cfg.Helper.Socket}
+		sysinfo.PrivilegedCall = client.Call
+		sysinfo.UpdateStagingDir = cfg.Helper.StagingDir
+		slog.Info("helper_mode_enabled", "socket", cfg.Helper.Socket)
+	} else if cfg.Helper == nil && os.Geteuid() != 0 {
+		slog.Warn("unprivileged_without_helper", "impact", "service control, firewall, process signaling and self-update require a [helper] section and the lightpanel-helper service")
+	}
 	handler, err := newHandler(cfg, files, sysinfo.NewManager())
 	if err != nil {
 		return err

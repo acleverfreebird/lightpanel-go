@@ -28,12 +28,17 @@ pkg/sysinfo/filemanager.go   全盘文件浏览/上传/下载/新建/重命名/�
 pkg/sysinfo/update.go        检查 GitHub Release、校验 SHA256、替换二进制并重启服务
 pkg/sysinfo/logs.go          journalctl 系统与服务日志
 pkg/sysinfo/firewall.go      UFW/firewalld 状态和端口规则
+pkg/helper/protocol.go       最小特权 helper 协议（请求/响应、目录校验）
+pkg/helper/acl.go            按服务/动作的授权 ACL 与防火墙参数白名单
+pkg/helper/client.go         面板侧 helper 客户端（unix socket）
+pkg/helper/server_linux.go   helper 服务端：SO_PEERCRED、白名单执行、更新安装
 pkg/**/*_test.go             安全边界与解析测试
 server_test.go              路由、登录、权限、文件流程、审计测试
 static/app.js, app.css       无第三方框架的响应式管理界面
 templates/*.html            登录页与管理页模板
 config.toml                 无预置密码的配置样例
-lightpanel.service          systemd 单元
+lightpanel.service          systemd 单元（非特权面板）
+lightpanel-helper.service   systemd 单元（root helper）
 Makefile                    Linux amd64/arm64 构建与测试
 .github/workflows/release.yml  推送 v* 标签时构建发布产物（amd64/arm64 + SHA256SUMS）
 scripts/smoke.py             可选开发验证脚本（非运行依赖）
@@ -44,7 +49,7 @@ docs/VALIDATION.md           验证记录与已知限制
 
 已实现：系统概览、进程搜索/分页/结束、systemd 服务管理、全盘文件浏览/上传/下载/新建文件夹/重命名/在线编辑/递归删除/权限、版本检查与一键更新、单管理员登录和可选只读权限、系统/服务日志、防火墙端口规则。Web 终端是需求中的可选项，本版不包含，`/ws/terminal` 返回 404。
 
-安全边界：这是有权限的主机管理工具，不是多租户容器。文件管理面向**整个文件系统**：所有接口只接受绝对路径，`..` 组件、反斜杠与 NUL 一律拒绝；`/proc`、`/sys`、`/dev`、`/run` 这四个虚拟系统目录拒绝删除与移动。下载/编辑读取只接受普通文件（符号链接若最终指向普通文件也可下载）；chmod 只接受普通文件与目录，且拒绝 setuid/setgid 与符号链接；只允许普通文件上传，禁止覆盖；目录删除默认要求为空，带 `recursive=true` 时递归删除且不允许删除根；在线编辑只处理 ≤1 MiB 且不含 NUL 的普通文件，保存先写临时文件再原子替换，且拒绝以符号链接为目标的写入。进程以 root 运行时这些接口等同 root 文件权限，请务必启用 TLS/反代并保管好管理员密码。
+安全边界：这是有权限的主机管理工具，不是多租户容器。文件管理面向**整个文件系统**：所有接口只接受绝对路径，`..` 组件、反斜杠与 NUL 一律拒绝；`/proc`、`/sys`、`/dev`、`/run` 这四个虚拟系统目录拒绝删除与移动。下载/编辑读取只接受普通文件（符号链接若最终指向普通文件也可下载）；chmod 只接受普通文件与目录，且拒绝 setuid/setgid 与符号链接；只允许普通文件上传，禁止覆盖；目录删除默认要求为空，带 `recursive=true` 时递归删除且不允许删除根；在线编辑只处理 ≤1 MiB 且不含 NUL 的普通文件，保存先写临时文件再原子替换，且拒绝以符号链接为目标的写入。进程以 root 运行时这些接口等同 root 文件权限；默认的最小特权模式下面板以专用非特权用户 `lightpanel` 运行（见「最小特权 helper」），文件接口仅等同该用户权限。无论哪种模式，请务必启用 TLS/反代并保管好管理员密码。
 
 ## 2. 核心数据流与接口设计
 
@@ -121,7 +126,7 @@ curl -fsSL https://raw.githubusercontent.com/acleverfreebird/lightpanel-go/main/
 sudo bash install-lightpanel.sh
 ```
 
-脚本自动完成：架构检测 → 下载源码现场编译（缺失 Go 工具链时自动安装到 `/usr/local/go`，模块代理失败自动切换 goproxy.cn）→ 安装到 `/opt/lightpanel` → 写入 `config.toml`（0600）→ 注册并启动 systemd 服务。
+脚本自动完成：架构检测 → 下载源码现场编译（缺失 Go 工具链时自动安装到 `/usr/local/go`，模块代理失败自动切换 goproxy.cn）→ 安装到 `/opt/lightpanel` → 写入 `config.toml` → 创建系统用户 `lightpanel` → 注册并启动 systemd 服务（面板以非特权用户运行，`lightpanel-helper` 以 root 执行白名单特权操作）。
 
 要点：
 
@@ -129,14 +134,14 @@ sudo bash install-lightpanel.sh
 - 重复执行同一命令即为升级：替换二进制并重启服务，保留现有 `config.toml` 与密码。
 - 非交互环境（自动化脚本）预置哈希：`curl -fsSL …/install.sh | sudo LP_PASS_HASH='<bcrypt 哈希>' bash -`；哈希先用 `lightpanel -hash-password` 在有终端的机器上生成。
 - 反向代理/域名访问：`sudo bash install-lightpanel.sh --origin https://panel.example.com`（仍监听 `127.0.0.1`，TLS 由反代终止）。
-- 其他选项：`--port 8888`、`--admin NAME`、`--read-only`、`--release latest`（改用 GitHub Release 预编译二进制，含 sha256 校验）、`--ref TAG`、`--force-config`（重写配置）、`--no-start`；完整列表见 `sudo bash install-lightpanel.sh --help`。
+- 其他选项：`--port 8888`、`--admin NAME`、`--read-only`、`--release latest`（改用 GitHub Release 预编译二进制，含 sha256 校验）、`--ref TAG`、`--force-config`（重写配置）、`--no-start`、`--legacy-root`（旧版 root 面板模式，不创建专用用户/不启用 helper）；完整列表见 `sudo bash install-lightpanel.sh --help`。
 - GitHub 直连不畅时：`sudo LP_SOURCE_MIRROR='https://ghproxy.example/' bash install-lightpanel.sh`，源码/Release 下载会先尝试镜像前缀再回退官方地址（Go 工具链已内置 golang.google.cn 与阿里云镜像回退，Go 模块代理失败自动切换 goproxy.cn）。
-- 卸载：`curl -fsSL https://raw.githubusercontent.com/acleverfreebird/lightpanel-go/main/scripts/uninstall.sh | sudo bash`（加 `--purge` 一并删除 `/var/lib/lightpanel` 旧数据目录）。
+- 卸载：`curl -fsSL https://raw.githubusercontent.com/acleverfreebird/lightpanel-go/main/scripts/uninstall.sh | sudo bash`（加 `--purge` 一并删除 `/var/lib/lightpanel` 数据目录）。
 
 ### 发布与在线更新
 
 - 发布流程：推送 `v*` 标签（如 `git tag v0.1.0 && git push origin v0.1.0`），GitHub Actions 自动构建 amd64/arm64 静态二进制（版本号注入 `-X main.version`）、生成 `SHA256SUMS` 并发布到该标签的 Release。
-- 面板内更新：概览页「版本与更新」→「检查更新」对比当前版本与最新 Release；确认后「更新到最新版」下载对应架构二进制，先校验 SHA256 再原子替换 `/proc/self/exe`，随后自动 `systemctl restart lightpanel`。整个流程需要登录、带 CSRF 校验、计入审计，只读模式不可用。
+- 面板内更新：概览页「版本与更新」→「检查更新」对比当前版本与最新 Release；确认后「更新到最新版」下载对应架构二进制，先校验 SHA256 再原子替换自身二进制，随后自动 `systemctl restart lightpanel`。最小特权模式下由 helper 复核并安装（见上文）；root 模式由面板直接替换。整个流程需要登录、带 CSRF 校验、计入审计，只读模式不可用。
 - GitHub 直连不畅时配置 `update_mirror`（或 `LP_UPDATE_MIRROR`）为镜像站点源（如 `https://ghproxy.family`），下载会走 `镜像 + 官方地址` 前缀；API 查询仍直连 GitHub。
 - 安全权衡：校验和来自同一 Release，防下载损坏但不防 Release 本身被篡改；上游仓库安全即更新安全。不想使用时可忽略该卡片，继续用 install.sh 升级。
 
@@ -189,7 +194,7 @@ ssh -N -L 8888:127.0.0.1:8888 user@your-server
 
 仍在本地打开 `http://127.0.0.1:8888`，保持与 `public_origin` 相同。不要用 `localhost` 替代 `127.0.0.1`，除非同时修改配置。
 
-TOML 是可选外部文件：不传 `-c` 时只用安全默认值和环境变量。全部支持覆盖：`LP_HOST`、`LP_PORT`、`LP_ADMIN_USER`、`LP_PASS_HASH`、`LP_TLS_CERT`、`LP_TLS_KEY`、`LP_PUBLIC_ORIGIN`、`LP_LOG_FILE`、`LP_READ_ONLY`、`LP_MAX_UPLOAD_MB`（1..2048，默认 32）、`LP_UPDATE_REPO`（默认 `acleverfreebird/lightpanel-go`）、`LP_UPDATE_MIRROR`（http(s) 源，留空直连 GitHub）。`sandbox_root` 配置项已废弃（文件管理现为全盘访问），旧配置文件中的该字段会被忽略。生产配置/哈希/私钥应仅允许运行账号读取。
+TOML 是可选外部文件：不传 `-c` 时只用安全默认值和环境变量。全部支持覆盖：`LP_HOST`、`LP_PORT`、`LP_ADMIN_USER`、`LP_PASS_HASH`、`LP_TLS_CERT`、`LP_TLS_KEY`、`LP_PUBLIC_ORIGIN`、`LP_LOG_FILE`、`LP_READ_ONLY`、`LP_MAX_UPLOAD_MB`（1..2048，默认 32）、`LP_UPDATE_REPO`（默认 `acleverfreebird/lightpanel-go`）、`LP_UPDATE_MIRROR`（http(s) 源，留空直连 GitHub）、`LP_HELPER_SOCKET`（已配置 `[helper]` 段时覆盖 socket 路径）。`sandbox_root` 配置项已废弃（文件管理现为全盘访问），旧配置文件中的该字段会被忽略。生产配置/哈希/私钥应仅允许运行账号读取。
 
 ### HTTPS 与反向代理
 
@@ -213,17 +218,51 @@ location / {
 
 ### systemd
 
+默认单元以专用非特权用户 `lightpanel` 运行（一键部署自动创建），root 级操作由独立的 `lightpanel-helper` 服务按白名单执行，见下节「最小特权 helper」。手动部署时安装两个单元：
+
 ```bash
-sudo install -m 0644 lightpanel.service /etc/systemd/system/lightpanel.service
+sudo install -m 0644 lightpanel.service lightpanel-helper.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now lightpanel
-sudo systemctl status lightpanel
+sudo systemctl enable --now lightpanel-helper lightpanel
+sudo systemctl status lightpanel lightpanel-helper
 sudo journalctl -u lightpanel -n 100 --no-pager
 ```
 
-单元默认 root 运行，才能管理其他用户进程、系统服务和防火墙。仅监控时建议使用专用普通用户、配置 `read_only=true`，按需赋予 `systemd-journal` 组日志读取权限；系统命令仍受 OS 权限约束。
+面板进程不需要任何 Linux capability；日志读取（journalctl）需要 `systemd-journal` 组（单元中已声明 `SupplementaryGroups=systemd-journal`，无该组的系统可删除此行，代价是日志页返回错误）。需要旧版 root 面板行为时把单元 `User` 改回 root（或用 `--legacy-root` 安装），此时 `[helper]` 不参与。
 
-单元启用 `NoNewPrivileges`、内核参数保护等约束。文件管理需要访问整个文件系统，因此不再启用 `ProtectSystem`/`ProtectHome`/`PrivateTmp`/`ReadWritePaths` 等文件系统隔离；`/proc`、`/sys`、`/dev`、`/run` 的删除与重命名由面板自身拒绝。生产管理模式中，启动/停止任意系统服务、防火墙规则变更和全盘文件操作本身就是管理员权限。
+单元启用 `NoNewPrivileges`、内核参数保护等约束。文件管理需要访问运行用户可读写的整个文件系统，因此面板单元不启用 `ProtectSystem`/`ProtectHome`/`PrivateTmp`/`ReadWritePaths` 等文件系统隔离；`/proc`、`/sys`、`/dev`、`/run` 的删除与重命名由面板自身拒绝。helper 单元则启用 `ProtectSystem=strict`，只允许写 `/opt/lightpanel` 与 `/etc/ufw`。
+
+### 最小特权 helper（默认）
+
+最小特权模式把「面向网络的 HTTP 进程」与「执行特权操作的最小面」分离：
+
+- **面板进程**（`lightpanel.service`）以系统用户 `lightpanel` 运行，没有任何 capability。HTTP/TLS/表单解析等全部攻击面都运行在该用户权限下。
+- **helper 进程**（`lightpanel-helper.service`，即同一二进制的 `lightpanel helper -c …` 子命令）以 root 运行，监听 `/run/lightpanel/helper.sock`。它只接受一个固定的小请求集，执行前做三重校验：连接方 UID（每条连接用 `SO_PEERCRED` 复核，仅 `allowed_users` 与 root）、操作白名单、参数重建（例如防火墙参数由 helper 按端口/协议白名单重新生成，不接受面板转发的原始 argv）。
+
+`config.toml` 的 `[helper]` 段同时是两端的授权边界：
+
+```toml
+[helper]
+allowed_users = ["lightpanel"]
+allow_firewall = true   # ufw/firewalld 端口规则（读+写）
+allow_kill = true       # 对任意进程发 SIGTERM/SIGKILL（进程身份经 pidfd 固定）
+allow_update = true     # 在线更新：helper 复核 SHA256 后安装并重启面板
+
+# 按服务/动作细分授权：单元名 = 允许的 systemd 动作（start/stop/restart）。
+# 空表 = 拒绝一切服务控制；"*" 条目把动作授予所有单元（旧版行为）。
+[helper.services]
+"nginx.service" = ["start", "stop", "restart"]
+```
+
+行为细节：
+
+- 面板以 root 运行时（旧模式）完全忽略 `[helper]`，行为与旧版本一致；非 root 且未配置 `[helper]` 时，服务控制/防火墙/进程信号/在线更新返回明确错误，其余只读功能正常。
+- 服务列表、服务详情、日志读取等只读操作不经 helper。
+- 文件管理以 `lightpanel` 用户权限执行：能看/改什么取决于该用户的 OS 权限。需要 root 全盘文件管理时改用 `--legacy-root`，代价是 HTTP 进程重新获得 root。
+- 在线更新：非 root 面板把 Release 资产下载到 `staging_dir`（默认 `/var/lib/lightpanel/update`），helper 复核目录属主/权限与 SHA256 清单后再换二进制并延迟重启面板；暂存目录必须属于面板用户且不允许组/其他用户可写。
+- helper 每次操作写 journald 审计日志（操作、UID、对象、结果）。
+
+`--legacy-root` 保留旧模式；升级已有安装时脚本会在配置缺失 `[helper]` 段时追加通配授权（等价旧版行为），建议随后按需收紧。
 
 支持采用 systemd 的 Ubuntu/Debian/CentOS/Rocky/Alma 的 Linux amd64/arm64；尚未在每个发行版上逐一实机认证。安全结束进程依赖 Linux **5.3+ pidfd**；旧 CentOS 7 内核的概览/文件等可用，但进程结束返回 501，不退回有 PID 复用竞态的 `kill(pid)`。工具缺失时对应模块显示明确错误，其余模块可用。发行版 SELinux/Polkit/系统命令版本可能要求额外策略适配。
 
@@ -240,7 +279,7 @@ sudo journalctl -u lightpanel -n 100 --no-pager
 
 ## 6. 后续可扩展点
 
-1. 单独的最小特权 helper + 按服务/动作细分授权，减少 HTTP 进程 root 权限。
+1. （已实现，见「最小特权 helper」）后续收窄方向：按动作区分面板管理员角色、helper 请求限速与审计导出。
 2. 多用户/角色、TOTP、会话撤销页面；确有需要时才引入 SQLite。
 3. 防火墙区域选择、持久化规则事务、远程连接保护和定时回滚。
 4. Web Terminal 作为独立高风险模块：默认关闭、严格 Origin、一次性票据、PTY 资源上限、会话超时和审计。不要简单恢复原来的无限制 shell。

@@ -1,0 +1,37 @@
+[Unit]
+Description=LightPanel privileged helper (least-privilege operations)
+# 面板通过 /run/lightpanel/helper.sock 转发白名单内的特权请求。
+After=network.target
+
+[Service]
+Type=simple
+# helper 是唯一以 root 运行的组件：只暴露 [helper] 白名单内的操作
+# （按服务/动作细分授权），并通过 SO_PEERCRED 校验连接者身份。
+User=root
+Group=root
+RuntimeDirectory=lightpanel
+RuntimeDirectoryMode=0750
+ExecStart=/opt/lightpanel/lightpanel helper -c /opt/lightpanel/config.toml
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=15
+UMask=0077
+NoNewPrivileges=true
+# helper 需要写 /opt/lightpanel（在线更新换二进制）与 /etc/ufw（ufw 规则）；
+# 其余文件系统一律只读。firewalld 走 D-Bus，不需要本地写权限。
+ProtectSystem=strict
+ReadWritePaths=/opt/lightpanel /etc/ufw
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LimitNOFILE=256
+TasksMax=32
+MemoryHigh=32M
+MemoryMax=64M
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

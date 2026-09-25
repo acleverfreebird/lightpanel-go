@@ -83,3 +83,58 @@ func TestConfigAcceptsDeprecatedSandboxRoot(t *testing.T) {
 		t.Fatalf("deprecated sandbox_root rejected: %v", err)
 	}
 }
+
+func TestConfigHelperSection(t *testing.T) {
+	hash, _ := bcrypt.GenerateFromPassword([]byte("a-long-test-password"), 10)
+	write := func(t *testing.T, body string) string {
+		t.Helper()
+		p := filepath.Join(t.TempDir(), "test.toml")
+		full := "password_hash = \"" + string(hash) + "\"\n" + body
+		if err := os.WriteFile(p, []byte(full), 0600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	p := write(t, `
+[helper]
+allowed_users = ["lightpanel"]
+allow_firewall = true
+allow_update = true
+[helper.services]
+"nginx.service" = ["start", "stop", "restart"]
+"*" = []
+`)
+	c, err := LoadConfig(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Helper == nil {
+		t.Fatal("helper section lost")
+	}
+	if c.Helper.Socket != "/run/lightpanel/helper.sock" {
+		t.Errorf("socket default not applied: %q", c.Helper.Socket)
+	}
+	if c.Helper.StagingDir != "/var/lib/lightpanel/update" {
+		t.Errorf("staging_dir default not applied: %q", c.Helper.StagingDir)
+	}
+	if !c.Helper.AllowFirewall || c.Helper.AllowKill {
+		t.Errorf("flags: %+v", c.Helper)
+	}
+	if len(c.Helper.Services["nginx.service"]) != 3 {
+		t.Errorf("services ACL: %+v", c.Helper.Services)
+	}
+
+	for _, bad := range []string{
+		"[helper]\nallowed_users = []\n",                                                            // no users
+		"[helper]\nallowed_users = [\"Bad Name\"]\n",                                                // invalid name
+		"[helper]\nsocket = \"run/helper.sock\"\nallowed_users = [\"lp\"]\n",                        // relative socket
+		"[helper]\nsocket = \"/run/../helper.sock\"\nallowed_users = [\"lp\"]\n",                    // traversal socket
+		"[helper]\nstaging_dir = \"var/tmp\"\nallowed_users = [\"lp\"]\n",                           // relative staging
+		"[helper]\nallowed_users = [\"lp\"]\n[helper.services]\n\"nginx\" = [\"start\"]\n",          // not a unit
+		"[helper]\nallowed_users = [\"lp\"]\n[helper.services]\n\"nginx.service\" = [\"enable\"]\n", // action not whitelisted
+	} {
+		if _, err := LoadConfig(write(t, bad)); err == nil {
+			t.Errorf("invalid helper config accepted:\n%s", bad)
+		}
+	}
+}
