@@ -1,0 +1,4 @@
+# Normalize all text files to LF in the repository and in the working tree.
+# Linux is the runtime platform, and tools like gofmt expect LF; text=auto
+# still auto-detects and skips binary files.
+* text=auto eol=lf
