@@ -1,56 +1,43 @@
 import { $, api, el, message } from './ui.js';
 import { size, percent, duration } from './format.js';
+import { icon } from './icons.js';
 
-const SVG_NS = 'http://www.w3.org/2000/svg';
-const RING_R = 30;
-const RING_LEN = 2 * Math.PI * RING_R;
-const COLORS = { cpu: '#16856b', memory: '#667dcf', disk: '#c08a3e', net: '#8b6fc0' };
+const COLORS = { cpu: '#c05a30', memory: '#6d78b8', disk: '#a48132', net: '#347f81' };
 const samples = [];
 let version = 0;
 let cards = null;
 
 const percentage = value => value === null ? '不可用' : `${value.toFixed(1)}%`;
 
-function svgCircle(cls) {
-  const node = document.createElementNS(SVG_NS, 'circle');
-  node.setAttribute('cx', '36');
-  node.setAttribute('cy', '36');
-  node.setAttribute('r', String(RING_R));
-  node.setAttribute('class', cls);
-  return node;
+function meter(color) {
+  const track = el('div', undefined, 'metric-meter');
+  track.setAttribute('role', 'img');
+  const bar = el('span');
+  bar.style.background = color;
+  bar.style.transform = 'scaleX(0)';
+  track.append(bar);
+  return { track, bar };
 }
 
-function ring(color) {
-  const svg = document.createElementNS(SVG_NS, 'svg');
-  svg.setAttribute('viewBox', '0 0 72 72');
-  svg.setAttribute('class', 'metric-ring');
-  svg.setAttribute('role', 'img');
-  const bar = svgCircle('ring-bar');
-  bar.style.stroke = color;
-  bar.style.strokeDasharray = RING_LEN.toFixed(2);
-  bar.style.strokeDashoffset = RING_LEN.toFixed(2);
-  svg.append(svgCircle('ring-track'), bar);
-  return { svg, bar };
-}
-
-function buildCard({ label, icon, color, gauge }) {
+function buildCard({ label, symbolName, color, gauge }) {
   const card = el('article', undefined, 'metric-card');
   const head = el('div', undefined, 'metric-head');
-  const symbol = el('span', icon, 'metric-icon');
+  const symbol = el('span', undefined, 'metric-icon');
+  symbol.append(icon(symbolName));
   symbol.setAttribute('aria-hidden', 'true');
   head.append(el('h2', label), symbol);
   card.append(head);
   const parts = { card, label };
   if (gauge) {
     const body = el('div', undefined, 'metric-body');
-    const { svg, bar } = ring(color);
-    parts.svg = svg;
+    const { track, bar } = meter(color);
+    parts.track = track;
     parts.bar = bar;
     parts.value = el('strong', '—', 'metric-value');
     parts.detail = el('small', '');
     const text = el('div', undefined, 'metric-text');
     text.append(parts.value, parts.detail);
-    body.append(svg, text);
+    body.append(text, track);
     card.append(body);
   } else {
     parts.value = el('strong', '—', 'metric-value');
@@ -64,10 +51,10 @@ function buildCard({ label, icon, color, gauge }) {
 function ensureCards() {
   if (cards) return;
   cards = [
-    buildCard({ label: 'CPU 使用率', icon: '⌁', color: COLORS.cpu, gauge: true }),
-    buildCard({ label: '内存使用', icon: '▥', color: COLORS.memory, gauge: true }),
-    buildCard({ label: '根分区磁盘', icon: '▤', color: COLORS.disk, gauge: true }),
-    buildCard({ label: '网络接收', icon: '⇅', color: COLORS.net, gauge: false }),
+    buildCard({ label: 'CPU 使用率', symbolName: 'cpu', color: COLORS.cpu, gauge: true }),
+    buildCard({ label: '内存使用', symbolName: 'memory', color: COLORS.memory, gauge: true }),
+    buildCard({ label: '根分区磁盘', symbolName: 'disk', color: COLORS.disk, gauge: true }),
+    buildCard({ label: '网络接收', symbolName: 'network', color: COLORS.net, gauge: false }),
   ];
   $('#metrics').replaceChildren(...cards.map(part => part.card));
 }
@@ -77,8 +64,8 @@ function setGauge(part, usage) {
   const ratio = usage === null ? 0 : Math.min(usage, 100) / 100;
   part.bar.classList.toggle('idle', usage === null);
   part.bar.classList.toggle('high', usage !== null && usage >= 85);
-  part.bar.style.strokeDashoffset = (RING_LEN * (1 - ratio)).toFixed(2);
-  part.svg.setAttribute('aria-label', `${part.label} ${percentage(usage)}`);
+  part.bar.style.transform = `scaleX(${ratio})`;
+  part.track.setAttribute('aria-label', `${part.label} ${percentage(usage)}`);
 }
 
 export async function overview() {
@@ -134,9 +121,9 @@ function drawChart() {
   ctx.font = '11px sans-serif';
   [0, 25, 50, 75, 100].forEach(value => {
     const y = bottom - value / 100 * (bottom - top);
-    ctx.fillStyle = '#8a97a8';
+    ctx.fillStyle = '#848b7b';
     ctx.fillText(`${value}%`, 0, y + 4);
-    ctx.strokeStyle = value === 0 ? '#dde4ec' : '#eef2f6';
+    ctx.strokeStyle = value === 0 ? '#dce1d3' : '#eff1e9';
     ctx.lineWidth = 1;
     ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(width, y); ctx.stroke();
   });
@@ -160,8 +147,8 @@ function drawChart() {
           ctx.lineTo(points[0][0], bottom);
           ctx.closePath();
           const grad = ctx.createLinearGradient(0, top, 0, bottom);
-          grad.addColorStop(0, 'rgba(22,133,107,.16)');
-          grad.addColorStop(1, 'rgba(22,133,107,0)');
+          grad.addColorStop(0, 'rgba(192,90,48,.18)');
+          grad.addColorStop(1, 'rgba(192,90,48,0)');
           ctx.fillStyle = grad;
           ctx.fill();
         }
