@@ -282,7 +282,8 @@ install_unit() {
     cat > "$UNIT" <<'EOF'
 [Unit]
 Description=LightPanel lightweight Linux management panel
-After=network.target
+After=network.target lightpanel-helper.service
+Wants=lightpanel-helper.service
 
 [Service]
 Type=simple
@@ -376,7 +377,7 @@ Type=simple
 User=root
 Group=root
 RuntimeDirectory=lightpanel
-RuntimeDirectoryMode=0750
+RuntimeDirectoryMode=0755
 ExecStart=/opt/lightpanel/lightpanel helper -c /opt/lightpanel/config.toml
 Restart=on-failure
 RestartSec=3
@@ -386,7 +387,7 @@ NoNewPrivileges=true
 # helper 需要写 /opt/lightpanel（在线更新换二进制）与 /etc/ufw（ufw 规则）；
 # 其余文件系统一律只读。firewalld 走 D-Bus，不需要本地写权限。
 ProtectSystem=strict
-ReadWritePaths=/opt/lightpanel /etc/ufw
+ReadWritePaths=/opt/lightpanel -/etc/ufw
 ProtectHome=true
 PrivateTmp=true
 ProtectKernelTunables=true
@@ -419,14 +420,16 @@ EOF
   if systemctl is-active --quiet "$SERVICE_NAME"; then
     log "服务已启动并设置开机自启"
   else
-    log "警告: 服务未在运行，最近日志如下（也可: journalctl -u $SERVICE_NAME -n 50 --no-pager）"
+    log "错误: 服务未在运行，最近日志如下（也可: journalctl -u $SERVICE_NAME -n 50 --no-pager）"
     journalctl -u "$SERVICE_NAME" -n 20 --no-pager || true
+    fail "面板启动失败，请修正上述错误后重新启动"
   fi
   if [ "$LEGACY_ROOT" -eq 0 ]; then
     if systemctl is-active --quiet "$HELPER_SERVICE_NAME"; then
       log "helper 服务已启动（lightpanel-helper）"
     else
-      log "警告: helper 未在运行，服务控制等特权操作将不可用（journalctl -u $HELPER_SERVICE_NAME -n 20 --no-pager）"
+      journalctl -u "$HELPER_SERVICE_NAME" -n 20 --no-pager || true
+      fail "helper 启动失败，服务控制等特权操作不可用"
     fi
   fi
 }
