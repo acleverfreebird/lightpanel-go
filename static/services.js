@@ -29,7 +29,7 @@ export function setupProcesses() {
 }
 
 let serviceItems = [], servicePage = 1, serviceVersion = 0, detailVersion = 0, navigate;
-const actionNames = { start: '启动', stop: '停止', restart: '重启' };
+const actionNames = { start: '启动', stop: '停止', restart: '重启', reload: '重载配置', enable: '启用开机启动', disable: '禁用开机启动' };
 async function serviceDetail(name) {
   const version = ++detailVersion;
   const data = await api('/api/services?' + new URLSearchParams({ name }));
@@ -40,7 +40,8 @@ async function serviceDetail(name) {
   $('#service-detail').scrollIntoView({ behavior: 'auto', block: 'nearest' });
 }
 async function serviceAction(name, action) {
-  if (!await confirmAction({ title: `${actionNames[action]}服务？`, description: '服务状态将发生变化，依赖它的连接或任务可能受到影响。', target: name, confirm: `${actionNames[action]}服务`, danger: action !== 'start' })) return;
+  const description = ['enable', 'disable'].includes(action) ? '仅修改开机启动配置，不会立即启动或停止当前服务。' : action === 'reload' ? '要求服务重新加载配置；服务必须支持重载，否则操作会返回错误。' : '服务状态将发生变化，依赖它的连接或任务可能受到影响。';
+  if (!await confirmAction({ title: `${actionNames[action]}？`, description, target: name, confirm: actionNames[action], danger: ['stop', 'restart', 'disable'].includes(action) })) return;
   await mutate('/api/service/action', { name, action });
   await services();
   await serviceDetail(name);
@@ -50,13 +51,16 @@ function renderServices() {
   const items = serviceItems.filter(s => `${s.name} ${s.description}`.toLowerCase().includes(query) && (filter === 'all' || s.state === filter));
   const pages = Math.max(1, Math.ceil(items.length / 25));
   servicePage = Math.min(servicePage, pages);
-  table('#service-list', ['服务名称', '状态', '描述', '操作'], items.slice((servicePage - 1) * 25, servicePage * 25).map(s => {
+  table('#service-list', ['服务名称', '状态', '开机启动', '描述', '操作'], items.slice((servicePage - 1) * 25, servicePage * 25).map(s => {
     const actions = el('div', undefined, 'actions');
     actions.append(button('详情', () => serviceDetail(s.name)), button('日志', () => { $('#logs-form [name=name]').value = s.name; navigate('logs'); }));
-    if (s.state === 'active') actions.append(button('重启', () => serviceAction(s.name, 'restart'), true), button('停止', () => serviceAction(s.name, 'stop'), true, 'danger-text'));
+    if (s.state === 'active') actions.append(button('重启', () => serviceAction(s.name, 'restart'), true), button('重载', () => serviceAction(s.name, 'reload'), true), button('停止', () => serviceAction(s.name, 'stop'), true, 'danger-text'));
     else actions.append(button('启动', () => serviceAction(s.name, 'start'), true));
+    if (s.unit_file_state === 'enabled' || s.unit_file_state === 'enabled-runtime') actions.append(button('禁用自启', () => serviceAction(s.name, 'disable'), true));
+    else if (s.unit_file_state === 'disabled') actions.append(button('启用自启', () => serviceAction(s.name, 'enable'), true));
     const state = { active: '运行中', inactive: '未运行', failed: '失败', activating: '启动中', deactivating: '停止中' };
-    return [s.name, badge(state[s.state] || s.state, s.state === 'active' ? 'good' : s.state === 'failed' ? 'bad' : ''), s.description || '—', actions];
+    const boot = { enabled: '已启用', disabled: '已禁用', 'enabled-runtime': '临时启用', static: '静态依赖', indirect: '间接启用', masked: '已屏蔽', 'masked-runtime': '临时屏蔽', generated: '动态生成', transient: '临时服务', alias: '别名', linked: '外部链接', 'linked-runtime': '临时链接', unknown: '未知' };
+    return [s.name, badge(state[s.state] || s.state, s.state === 'active' ? 'good' : s.state === 'failed' ? 'bad' : ''), badge(boot[s.unit_file_state] || s.unit_file_state || '未知', s.unit_file_state === 'enabled' ? 'good' : ''), s.description || '—', actions];
   }), '没有匹配的服务', '调整关键词或状态筛选，也可以在下方输入完整服务名。');
   $('#service-count').textContent = serviceItems.length;
   $('#service-page').textContent = `${items.length} 个匹配 · 第 ${servicePage} / ${pages} 页`;
@@ -66,7 +70,7 @@ export async function services() {
   const version = ++serviceVersion;
   const data = await api('/api/services');
   if (version !== serviceVersion) return;
-  serviceItems = parseServices(data.output); renderServices();
+  serviceItems = Array.isArray(data.items) ? data.items : parseServices(data.output); renderServices();
 }
 export function setupServices(go) {
   navigate = go;

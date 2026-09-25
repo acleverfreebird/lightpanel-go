@@ -1,6 +1,7 @@
 [Unit]
 Description=LightPanel lightweight Linux management panel
-After=network.target
+After=network.target lightpanel-helper.service
+Wants=lightpanel-helper.service
 
 [Service]
 Type=simple

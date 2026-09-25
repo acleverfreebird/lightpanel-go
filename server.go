@@ -44,6 +44,7 @@ func newHandler(cfg *config.Config, files *sysinfo.Files, manager *sysinfo.Manag
 	register("POST /logout", a.Logout)
 	metrics := &sysinfo.MetricsReader{}
 	register("GET /api/metrics", metrics.ServeHTTP)
+	register("GET /api/health", handleDiagnostics(cfg))
 	register("GET /api/processes", sysinfo.HandleProcesses)
 	register("POST /api/process/kill", sysinfo.HandleProcessKill)
 	register("GET /api/services", manager.Services)

@@ -29,6 +29,13 @@ export function normalizePath(value) {
   const body = String(value).trim().replace(/^\/+/, '').replace(/\/+$/, '');
   return '/' + body;
 }
+export function resolveInputPath(value, directory) {
+  const input = String(value).trim();
+  if (!input || /[\\\0]/.test(input) || input.split('/').includes('..')) {
+    throw new Error('请输入有效路径，不能包含反斜杠或 ..');
+  }
+  return normalizePath(input.startsWith('/') ? input : `${directory}/${input}`).replace(/\/{2,}/g, '/');
+}
 export function unitName(value) {
   const name = value.trim();
   return name && !name.endsWith('.service') ? `${name}.service` : name;

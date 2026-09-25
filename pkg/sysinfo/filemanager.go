@@ -16,6 +16,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"golang.org/x/sys/unix"
 )
@@ -171,6 +172,11 @@ func (f *Files) List(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		list = append(list, FileEntry{Name: e.Name(), Path: path.Join(abs, e.Name()), IsDir: s.IsDir(), Regular: s.Mode().IsRegular(), Symlink: s.Mode()&os.ModeSymlink != 0, Size: s.Size(), Mode: fmt.Sprintf("%03o", s.Mode().Perm()), Modified: s.ModTime().Unix()})
+		if s.Mode()&os.ModeSymlink != 0 {
+			if target, err := os.Stat(path.Join(abs, e.Name())); err == nil {
+				list[len(list)-1].IsDir = target.IsDir()
+			}
+		}
 	}
 	JSON(w, map[string]any{"path": abs, "items": list, "offset": offset, "more": more})
 }
@@ -284,7 +290,12 @@ func (f *Files) Rename(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid destination path", 400)
 		return
 	}
-	if err = os.Rename(from, to); err != nil {
+	if err = guardVirtualTopDir(to); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	// Atomic no-clobber semantics, including existing symbolic links.
+	if err = unix.Renameat2(unix.AT_FDCWD, from, unix.AT_FDCWD, to, unix.RENAME_NOREPLACE); err != nil {
 		fileError(w, err)
 		return
 	}
@@ -321,8 +332,8 @@ func (f *Files) Read(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("file exceeds %d MiB edit limit; download and edit locally", MaxEdit>>20), 400)
 		return
 	}
-	if bytes.IndexByte(data, 0) >= 0 {
-		http.Error(w, "binary file cannot be edited in the browser", 400)
+	if bytes.IndexByte(data, 0) >= 0 || !utf8.Valid(data) {
+		http.Error(w, "only UTF-8 text files can be edited in the browser", 400)
 		return
 	}
 	JSON(w, map[string]any{"path": abs, "size": s.Size(), "modified": s.ModTime().Unix(), "content": string(data)})
@@ -335,8 +346,13 @@ func (f *Files) Write(w http.ResponseWriter, r *http.Request) {
 	}
 	// A save must never silently replace a symlink entry with a regular file;
 	// edit the link target through its own path instead.
-	if info, err := os.Lstat(abs); err == nil && info.Mode()&os.ModeSymlink != 0 {
-		http.Error(w, "destination is a symbolic link", 400)
+	info, err := os.Lstat(abs)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		fileError(w, err)
+		return
+	}
+	if info != nil && !info.Mode().IsRegular() {
+		http.Error(w, "destination must be a regular file, not a symbolic link or special file", 400)
 		return
 	}
 	// Write to a temporary file first and rename it over the destination, so a
@@ -376,6 +392,24 @@ func (f *Files) Write(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	if info != nil {
+		// Atomic replacement must retain the service-readable mode and owner.
+		var st unix.Stat_t
+		if err = unix.Lstat(abs, &st); err == nil {
+			err = file.Chown(int(st.Uid), int(st.Gid))
+		}
+		if err == nil {
+			err = file.Chmod(info.Mode().Perm())
+		}
+		if err != nil {
+			fileError(w, err)
+			return
+		}
+	}
+	if err = file.Sync(); err != nil {
+		fileError(w, err)
+		return
+	}
 	if err = file.Close(); err != nil {
 		fileError(w, err)
 		return
@@ -403,7 +437,7 @@ func (f *Files) Chmod(w http.ResponseWriter, r *http.Request) {
 	}
 	// O_NOFOLLOW: permissions of a symlink entry itself are not editable;
 	// chmod the link target through its own path instead.
-	file, err := os.OpenFile(abs, os.O_RDONLY|unix.O_NOFOLLOW, 0)
+	file, err := os.OpenFile(abs, os.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
 	if err != nil {
 		fileError(w, err)
 		return

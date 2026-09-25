@@ -4,6 +4,7 @@ package helper
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -42,6 +43,23 @@ const (
 	execTimeout  = 15 * time.Second
 	updateExeMax = 64 << 20
 )
+
+// Drain command output without allowing a privileged command to exhaust memory.
+type commandBuffer struct {
+	bytes.Buffer
+	truncated bool
+}
+
+func (b *commandBuffer) Write(p []byte) (int, error) {
+	n := len(p)
+	left := (1 << 20) - b.Len()
+	if len(p) > left {
+		p = p[:left]
+		b.truncated = true
+	}
+	_, _ = b.Buffer.Write(p)
+	return n, nil
+}
 
 // ResolveUsers maps configured user names to UIDs (with the primary GID of
 // the first user for socket ownership).
@@ -89,14 +107,16 @@ func run(ctx context.Context, name string, args ...string) (string, error) {
 	cmd := exec.CommandContext(c, p, args...)
 	cmd.Env = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "LANG=C", "LC_ALL=C", "SYSTEMD_PAGER=cat", "SYSTEMD_COLORS=0"}
 	cmd.WaitDelay = time.Second
-	b, err := cmd.CombinedOutput()
+	var b commandBuffer
+	cmd.Stdout, cmd.Stderr = &b, &b
+	err = cmd.Run()
 	if c.Err() != nil {
-		return string(b), c.Err()
+		return b.String(), c.Err()
 	}
-	if len(b) > 1<<20 {
-		return string(b[:1<<20]), errors.New("command output exceeded 1 MiB")
+	if b.truncated {
+		return b.String(), errors.New("command output exceeded 1 MiB")
 	}
-	return string(b), err
+	return b.String(), err
 }
 
 // checkSocketDir refuses to create the socket in a directory other processes
@@ -143,14 +163,12 @@ func Run(ctx context.Context, cfg ServerConfig, log *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("listen on %s: %v", cfg.Socket, err)
 	}
-	if st, ok := l.(*net.UnixListener); ok {
-		if f, e := st.File(); e == nil {
-			// Connect permissions belong to the panel account; UID checks on
-			// each accepted connection are the real authorization boundary.
-			_ = os.Chmod(cfg.Socket, 0o660)
-			_ = os.Chown(cfg.Socket, uids[0], gid)
-			_ = f.Close()
-		}
+	defer l.Close()
+	if err := os.Chown(cfg.Socket, uids[0], gid); err != nil {
+		return fmt.Errorf("set socket owner: %w", err)
+	}
+	if err := os.Chmod(cfg.Socket, 0o660); err != nil {
+		return fmt.Errorf("set socket permissions: %w", err)
 	}
 	srv := &server{cfg: cfg, allowed: allowed, log: log}
 	go func() {
@@ -159,6 +177,7 @@ func Run(ctx context.Context, cfg ServerConfig, log *slog.Logger) error {
 	}()
 	log.Info("helper_listening", "socket", cfg.Socket, "allowed_users", cfg.AllowedUsers,
 		"services", len(cfg.Services), "firewall", cfg.AllowFirewall, "kill", cfg.AllowKill, "update", cfg.AllowUpdate)
+	slots := make(chan struct{}, 16)
 	for {
 		conn, err := l.Accept()
 		if err != nil {
@@ -168,7 +187,12 @@ func Run(ctx context.Context, cfg ServerConfig, log *slog.Logger) error {
 			}
 			return err
 		}
-		go srv.handle(conn)
+		select {
+		case slots <- struct{}{}:
+			go func() { defer func() { <-slots }(); srv.handle(conn) }()
+		default:
+			_ = conn.Close()
+		}
 	}
 }
 
@@ -407,9 +431,14 @@ func installFile(src, dst string) error {
 		return err
 	}
 	defer os.Remove(tmp.Name())
-	if _, err = io.Copy(tmp, io.LimitReader(in, updateExeMax+1)); err != nil {
+	n, err := io.Copy(tmp, io.LimitReader(in, updateExeMax+1))
+	if err != nil {
 		tmp.Close()
 		return err
+	}
+	if n > updateExeMax {
+		tmp.Close()
+		return errors.New("update binary exceeds 64 MiB")
 	}
 	if err = tmp.Chmod(0o755); err != nil {
 		tmp.Close()
