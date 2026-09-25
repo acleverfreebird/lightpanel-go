@@ -1,12 +1,13 @@
 import { $, guard, message, readOnly } from './ui.js';
 import { overview } from './overview.js';
+import { diagnostics } from './diagnostics.js';
 import { processes, services, setupProcesses, setupServices } from './services.js';
 import { files, setupFiles } from './files.js';
 import { logs, firewall, setupTools } from './tools.js';
 import { setupUpdate } from './update.js';
 
 const pages = {
-  overview: ['系统概览', '掌握资源使用情况，让每一次运维都有据可循。', overview],
+  overview: ['系统概览', '掌握资源使用情况，让每一次运维都有据可循。', () => Promise.all([overview(), diagnostics()])],
   processes: ['进程管理', '定位资源占用，安全地管理正在运行的进程。', processes],
   services: ['系统服务', '快速筛选服务状态，查看详情并执行维护操作。', services],
   files: ['文件管理', '浏览和管理服务器上的全部文件与目录。', files],
