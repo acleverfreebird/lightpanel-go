@@ -1,5 +1,5 @@
 import { $, api, mutate, guard, el, button, table, confirmAction, readOnly } from './ui.js';
-import { size, normalizePath, time } from './format.js';
+import { size, normalizePath, resolveInputPath, time } from './format.js';
 
 const maxUploadMB = Number(document.body.dataset.maxUpload) || 32;
 const maxEdit = 1024 * 1024;
@@ -38,7 +38,7 @@ function render() {
       actions.append(download);
     }
     if (item.regular && item.size <= maxEdit) actions.append(button('编辑', () => openEditor(item), true));
-    if (item.regular || item.is_dir) actions.append(button('权限', async () => {
+    if (!item.symlink && (item.regular || item.is_dir)) actions.append(button('权限', async () => {
       const mode = await confirmAction({ title: item.is_dir ? '修改目录权限' : '修改文件权限', description: '设置读、写和执行权限（不含 setuid/setgid）。', target: item.path, confirm: '保存权限', danger: false, input: item.mode });
       if (mode === null) return;
       await mutate('/api/file/chmod', { path: item.path, mode }); await files();
@@ -47,10 +47,12 @@ function render() {
       const name = await confirmAction({
         title: item.is_dir ? '重命名文件夹' : '重命名文件', description: '输入新名称；路径中带 / 可同时移动到其他目录。',
         target: item.path, confirm: '保存名称', danger: false, input: item.name,
-        inputLabel: '新路径', pattern: '.+', maxLength: 4096, placeholder: item.path, hint: '以 / 开头的绝对路径，不能包含 \\ 或 ..', numeric: false,
+        inputLabel: '新路径', pattern: '.+', maxLength: 4096, placeholder: item.path, hint: '名称相对于当前目录；以 / 开头表示绝对路径；不会覆盖已有文件', numeric: false,
       });
-      if (name === null || name === item.path) return;
-      await mutate('/api/file/rename', { path: item.path, to: normalizePath(name) }); await files();
+      if (name === null) return;
+      const to = resolveInputPath(name, currentPath);
+      if (to === item.path) return;
+      await mutate('/api/file/rename', { path: item.path, to }); await files();
     }, true));
     actions.append(button('删除', async () => {
       if (!await confirmAction({ title: '删除这个条目？', description: item.is_dir ? '将递归删除该目录及其全部内容，删除后无法通过面板恢复。' : '删除后无法通过面板恢复，请确认已有所需备份。', target: item.path, confirm: item.is_dir ? '递归删除' : '确认删除' })) return;
@@ -73,7 +75,7 @@ export async function files(path = currentPath, offset = currentOffset) {
   const request = ++version;
   const data = await api('/api/files?' + new URLSearchParams({ path, offset }));
   if (request !== version) return;
-  currentPath = path; currentOffset = offset; items = data.items;
+  currentPath = data.path; currentOffset = offset; items = data.items;
   $('#file-path-form [name=path]').value = data.path;
   $('#file-up').disabled = path === '/';
   const crumbs = [button('根目录', () => files('/', 0))];
@@ -91,10 +93,10 @@ async function mkdir() {
   const name = await confirmAction({
     title: '新建文件夹', description: '在当前目录创建文件夹，路径中带 / 可以一次创建多级目录。',
     target: currentPath === '/' ? '根目录' : currentPath, confirm: '创建', danger: false, input: '',
-    inputLabel: '文件夹路径', pattern: '.+', maxLength: 4096, placeholder: join(currentPath, '例如 backups'), hint: '绝对路径，可用 / 表示层级', numeric: false,
+    inputLabel: '文件夹路径', pattern: '.+', maxLength: 4096, placeholder: '例如 backups', hint: '在当前目录创建；以 / 开头可指定绝对路径', numeric: false,
   });
   if (name === null) return;
-  await mutate('/api/file/mkdir', { path: normalizePath(name) }); await files();
+  await mutate('/api/file/mkdir', { path: resolveInputPath(name, currentPath) }); await files();
 }
 
 async function openEditor(item) {
