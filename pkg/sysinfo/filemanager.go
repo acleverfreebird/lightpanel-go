@@ -25,35 +25,43 @@ const (
 	MaxEdit   = 1 << 20
 )
 
+// Files manages the whole server filesystem. Clients pass absolute paths;
+// they are validated lexically (absolute, cleaned, no ".." components) and
+// then used directly, so symlink semantics match familiar tools like SFTP.
 type Files struct {
-	root        *os.Root
 	uploadLimit int64
 }
 
-func NewFiles(dir string, uploadLimit int64) (*Files, error) {
+func NewFiles(uploadLimit int64) (*Files, error) {
 	if uploadLimit <= 0 || uploadLimit > 2<<30 {
 		uploadLimit = MaxUpload
 	}
-	root, err := os.OpenRoot(dir)
-	if err != nil {
-		return nil, err
-	}
-	s, err := root.Stat(".")
-	slash, e := os.Stat("/")
-	if err != nil || e != nil || os.SameFile(s, slash) {
-		root.Close()
-		return nil, fmt.Errorf("sandbox cannot be filesystem root")
-	}
-	return &Files{root: root, uploadLimit: uploadLimit}, nil
+	return &Files{uploadLimit: uploadLimit}, nil
 }
-func (f *Files) Close() error       { return f.root.Close() }
+func (f *Files) Close() error       { return nil }
 func (f *Files) UploadLimit() int64 { return f.uploadLimit }
-func safeName(p string) (string, error) {
+
+// resolvePath validates an absolute client path and returns the cleaned
+// absolute form. ".." components are rejected outright rather than resolved,
+// so a request can never silently climb elsewhere from the directory it names.
+func resolvePath(p string) (string, error) {
 	if p == "" {
-		p = "."
+		p = "/"
 	}
-	if !fs.ValidPath(p) || strings.ContainsAny(p, "\\\x00") {
-		return "", fmt.Errorf("path must be relative without .. or empty components")
+	if !strings.HasPrefix(p, "/") || strings.ContainsAny(p, "\\\x00") {
+		return "", fmt.Errorf("path must be absolute without \\ or .. components")
+	}
+	for _, part := range strings.Split(p, "/") {
+		if part == ".." {
+			return "", fmt.Errorf("path must not contain .. components")
+		}
+	}
+	p = path.Clean(p)
+	if p == "/" {
+		return "/", nil
+	}
+	if !fs.ValidPath(strings.TrimPrefix(p, "/")) {
+		return "", fmt.Errorf("path must be absolute without .. or empty components")
 	}
 	return p, nil
 }
@@ -70,22 +78,37 @@ func fileError(w http.ResponseWriter, err error) {
 	}
 	http.Error(w, "file operation failed: "+err.Error(), code)
 }
-func (f *Files) regular(name string) (*os.File, error) {
-	p, err := safeName(name)
-	if err != nil {
-		return nil, err
-	}
-	file, err := f.root.OpenFile(p, os.O_RDONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW, 0)
+
+// openRegular opens a regular file for reading. Symlinks are followed (a
+// regular file behind /bin/sh is still downloadable); O_NONBLOCK keeps a
+// FIFO-shaped target from blocking the open, and the fstat below rejects
+// anything that is not a regular file, including devices.
+func openRegular(abs string) (*os.File, error) {
+	file, err := os.OpenFile(abs, os.O_RDONLY|unix.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
 	}
 	var st unix.Stat_t
-	err = unix.Fstat(int(file.Fd()), &st)
-	if err != nil || st.Mode&unix.S_IFMT != unix.S_IFREG || st.Nlink != 1 {
+	if err = unix.Fstat(int(file.Fd()), &st); err != nil || st.Mode&unix.S_IFMT != unix.S_IFREG {
 		file.Close()
-		return nil, fmt.Errorf("only regular files with one hard link are allowed")
+		return nil, fmt.Errorf("only regular files can be read or downloaded")
 	}
 	return file, nil
+}
+
+// virtualTopDirs cannot be meaningfully deleted or moved: removing their
+// mount point would only churn the kernel or break the running system.
+var virtualTopDirs = map[string]bool{"proc": true, "sys": true, "dev": true, "run": true}
+
+func guardVirtualTopDir(abs string) error {
+	top := strings.TrimPrefix(abs, "/")
+	if i := strings.IndexByte(top, '/'); i >= 0 {
+		top = top[:i]
+	}
+	if virtualTopDirs[top] {
+		return fmt.Errorf("%s is a virtual system directory and cannot be deleted or moved", top)
+	}
+	return nil
 }
 
 type FileEntry struct {
@@ -93,18 +116,21 @@ type FileEntry struct {
 	Path     string `json:"path"`
 	IsDir    bool   `json:"is_dir"`
 	Regular  bool   `json:"regular"`
+	Symlink  bool   `json:"symlink"`
 	Size     int64  `json:"size"`
 	Mode     string `json:"mode"`
 	Modified int64  `json:"modified"`
 }
 
 func (f *Files) List(w http.ResponseWriter, r *http.Request) {
-	p, err := safeName(r.URL.Query().Get("path"))
+	abs, err := resolvePath(r.URL.Query().Get("path"))
 	if err != nil {
 		fileError(w, err)
 		return
 	}
-	dir, err := f.root.OpenFile(p, os.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	// O_DIRECTORY without O_NOFOLLOW: browsing through a symlinked directory
+	// (usrmerge /bin → usr/bin) should work like in any file manager.
+	dir, err := os.OpenFile(abs, os.O_RDONLY|unix.O_DIRECTORY|unix.O_NONBLOCK, 0)
 	if err != nil {
 		fileError(w, err)
 		return
@@ -144,12 +170,17 @@ func (f *Files) List(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			continue
 		}
-		list = append(list, FileEntry{Name: e.Name(), Path: path.Join(p, e.Name()), IsDir: s.IsDir(), Regular: s.Mode().IsRegular(), Size: s.Size(), Mode: fmt.Sprintf("%03o", s.Mode().Perm()), Modified: s.ModTime().Unix()})
+		list = append(list, FileEntry{Name: e.Name(), Path: path.Join(abs, e.Name()), IsDir: s.IsDir(), Regular: s.Mode().IsRegular(), Symlink: s.Mode()&os.ModeSymlink != 0, Size: s.Size(), Mode: fmt.Sprintf("%03o", s.Mode().Perm()), Modified: s.ModTime().Unix()})
 	}
-	JSON(w, map[string]any{"path": p, "items": list, "offset": offset, "more": more})
+	JSON(w, map[string]any{"path": abs, "items": list, "offset": offset, "more": more})
 }
 func (f *Files) Download(w http.ResponseWriter, r *http.Request) {
-	file, err := f.regular(r.URL.Query().Get("path"))
+	abs, err := resolvePath(r.URL.Query().Get("path"))
+	if err != nil {
+		fileError(w, err)
+		return
+	}
+	file, err := openRegular(abs)
 	if err != nil {
 		fileError(w, err)
 		return
@@ -160,25 +191,20 @@ func (f *Files) Download(w http.ResponseWriter, r *http.Request) {
 		fileError(w, err)
 		return
 	}
+	name := path.Base(abs)
 	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": s.Name()}))
-	http.ServeContent(w, r, s.Name(), s.ModTime(), file)
+	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": name}))
+	http.ServeContent(w, r, name, s.ModTime(), file)
 }
 func (f *Files) Upload(w http.ResponseWriter, r *http.Request) {
-	p, err := safeName(r.URL.Query().Get("path"))
-	if err != nil || p == "." {
+	abs, err := resolvePath(r.URL.Query().Get("path"))
+	if err != nil || abs == "/" {
 		http.Error(w, "invalid destination", 400)
 		return
 	}
-	// Pin parent directory for creation and cleanup; never truncate an existing inode.
-	parent, err := f.root.OpenRoot(path.Dir(p))
-	if err != nil {
-		fileError(w, err)
-		return
-	}
-	defer parent.Close()
-	name := path.Base(p)
-	file, err := parent.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	// O_EXCL|O_NOFOLLOW: never truncate or write through an existing entry,
+	// so a failed transfer cannot destroy an unrelated file either.
+	file, err := os.OpenFile(abs, os.O_WRONLY|os.O_CREATE|os.O_EXCL|unix.O_NOFOLLOW, 0600)
 	if err != nil {
 		fileError(w, err)
 		return
@@ -187,7 +213,7 @@ func (f *Files) Upload(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		file.Close()
 		if !success {
-			_ = parent.Remove(name)
+			_ = os.Remove(abs)
 		}
 	}()
 	r.Body = http.MaxBytesReader(w, r.Body, f.uploadLimit)
@@ -208,56 +234,69 @@ func (f *Files) Upload(w http.ResponseWriter, r *http.Request) {
 	JSON(w, map[string]string{"message": "uploaded"})
 }
 func (f *Files) Delete(w http.ResponseWriter, r *http.Request) {
-	p, err := safeName(r.FormValue("path"))
-	if err != nil || p == "." {
+	abs, err := resolvePath(r.FormValue("path"))
+	if err != nil || abs == "/" {
 		http.Error(w, "cannot delete root or invalid path", 400)
 		return
 	}
+	if err = guardVirtualTopDir(abs); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
 	if r.FormValue("recursive") == "true" {
-		if err = f.root.RemoveAll(p); err != nil {
+		if err = os.RemoveAll(abs); err != nil {
 			fileError(w, err)
 			return
 		}
 		JSON(w, map[string]string{"message": "removed recursively"})
 		return
 	}
-	if err = f.root.Remove(p); err != nil {
+	if err = os.Remove(abs); err != nil {
 		fileError(w, err)
 		return
 	}
 	JSON(w, map[string]string{"message": "removed (directories must be empty)"})
 }
 func (f *Files) Mkdir(w http.ResponseWriter, r *http.Request) {
-	p, err := safeName(r.FormValue("path"))
-	if err != nil || p == "." {
-		http.Error(w, "invalid directory name", 400)
+	abs, err := resolvePath(r.FormValue("path"))
+	if err != nil || abs == "/" {
+		http.Error(w, "invalid directory path", 400)
 		return
 	}
-	if err = f.root.MkdirAll(p, 0750); err != nil {
+	if err = os.MkdirAll(abs, 0750); err != nil {
 		fileError(w, err)
 		return
 	}
 	JSON(w, map[string]string{"message": "directory created"})
 }
 func (f *Files) Rename(w http.ResponseWriter, r *http.Request) {
-	from, err := safeName(r.FormValue("path"))
-	if err != nil || from == "." {
+	from, err := resolvePath(r.FormValue("path"))
+	if err != nil || from == "/" {
 		http.Error(w, "invalid source path", 400)
 		return
 	}
-	to, err := safeName(r.FormValue("to"))
-	if err != nil || to == "." {
+	if err = guardVirtualTopDir(from); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	to, err := resolvePath(r.FormValue("to"))
+	if err != nil || to == "/" {
 		http.Error(w, "invalid destination path", 400)
 		return
 	}
-	if err = f.root.Rename(from, to); err != nil {
+	if err = os.Rename(from, to); err != nil {
 		fileError(w, err)
 		return
 	}
 	JSON(w, map[string]string{"message": "renamed"})
 }
 func (f *Files) Read(w http.ResponseWriter, r *http.Request) {
-	file, err := f.regular(r.URL.Query().Get("path"))
+	abs, err := resolvePath(r.URL.Query().Get("path"))
+	if err != nil {
+		fileError(w, err)
+		return
+	}
+	file, err := openRegular(abs)
 	if err != nil {
 		fileError(w, err)
 		return
@@ -286,29 +325,22 @@ func (f *Files) Read(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "binary file cannot be edited in the browser", 400)
 		return
 	}
-	JSON(w, map[string]any{"path": s.Name(), "size": s.Size(), "modified": s.ModTime().Unix(), "content": string(data)})
+	JSON(w, map[string]any{"path": abs, "size": s.Size(), "modified": s.ModTime().Unix(), "content": string(data)})
 }
 func (f *Files) Write(w http.ResponseWriter, r *http.Request) {
-	p, err := safeName(r.URL.Query().Get("path"))
-	if err != nil || p == "." {
+	abs, err := resolvePath(r.URL.Query().Get("path"))
+	if err != nil || abs == "/" {
 		http.Error(w, "invalid destination", 400)
 		return
 	}
-	// Pin parent directory; write to a temporary file first and rename it over
-	// the destination, so a failed transfer never destroys the original content.
-	parent, err := f.root.OpenRoot(path.Dir(p))
-	if err != nil {
-		fileError(w, err)
-		return
-	}
-	defer parent.Close()
-	name := path.Base(p)
-	// Symlinks are rejected everywhere else in the panel; do not let a save
-	// silently replace a symlink entry with a regular file either.
-	if info, err := parent.Lstat(name); err == nil && info.Mode()&os.ModeSymlink != 0 {
+	// A save must never silently replace a symlink entry with a regular file;
+	// edit the link target through its own path instead.
+	if info, err := os.Lstat(abs); err == nil && info.Mode()&os.ModeSymlink != 0 {
 		http.Error(w, "destination is a symbolic link", 400)
 		return
 	}
+	// Write to a temporary file first and rename it over the destination, so a
+	// failed transfer never destroys the original content.
 	var tmp string
 	var file *os.File
 	var buf [8]byte
@@ -317,8 +349,8 @@ func (f *Files) Write(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "internal error", 500)
 			return
 		}
-		tmp = name + ".lp-edit-" + hex.EncodeToString(buf[:])
-		file, err = parent.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		tmp = abs + ".lp-edit-" + hex.EncodeToString(buf[:])
+		file, err = os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 		if err == nil {
 			break
 		}
@@ -331,7 +363,7 @@ func (f *Files) Write(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		file.Close()
 		if !success {
-			_ = parent.Remove(tmp)
+			_ = os.Remove(tmp)
 		}
 	}()
 	r.Body = http.MaxBytesReader(w, r.Body, MaxEdit)
@@ -350,7 +382,7 @@ func (f *Files) Write(w http.ResponseWriter, r *http.Request) {
 	}
 	// Rename replaces any existing regular file atomically and keeps the new
 	// content intact; it refuses to replace a non-empty directory.
-	if err = parent.Rename(tmp, name); err != nil {
+	if err = os.Rename(tmp, abs); err != nil {
 		fileError(w, err)
 		return
 	}
@@ -364,12 +396,24 @@ func (f *Files) Chmod(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "mode must be 3 octal digits (000..777)", 400)
 		return
 	}
-	file, err := f.regular(r.FormValue("path"))
+	abs, err := resolvePath(r.FormValue("path"))
+	if err != nil {
+		fileError(w, err)
+		return
+	}
+	// O_NOFOLLOW: permissions of a symlink entry itself are not editable;
+	// chmod the link target through its own path instead.
+	file, err := os.OpenFile(abs, os.O_RDONLY|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		fileError(w, err)
 		return
 	}
 	defer file.Close()
+	var st unix.Stat_t
+	if err = unix.Fstat(int(file.Fd()), &st); err != nil || st.Mode&unix.S_IFMT != unix.S_IFREG && st.Mode&unix.S_IFMT != unix.S_IFDIR {
+		http.Error(w, "only regular files and directories can be chmodded", 400)
+		return
+	}
 	if err = file.Chmod(os.FileMode(mode)); err != nil {
 		fileError(w, err)
 		return

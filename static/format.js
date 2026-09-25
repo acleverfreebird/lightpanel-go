@@ -26,8 +26,8 @@ export function time(value) {
   return new Date(n * 1000).toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
 }
 export function normalizePath(value) {
-  const path = value.trim();
-  return !path || path === '/' ? '.' : path.replace(/^\.\//, '').replace(/\/+$/, '') || '.';
+  const body = String(value).trim().replace(/^\/+/, '').replace(/\/+$/, '');
+  return '/' + body;
 }
 export function unitName(value) {
   const name = value.trim();

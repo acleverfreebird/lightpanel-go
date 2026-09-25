@@ -5,7 +5,6 @@ import (
 	"net"
 	"net/url"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -19,6 +18,7 @@ type Config struct {
 	Port         int    `toml:"port"`
 	AdminUser    string `toml:"admin_user"`
 	PasswordHash string `toml:"password_hash"`
+	// Deprecated: 文件管理已改为管理整个文件系统；保留此字段仅为兼容旧配置文件。
 	SandboxRoot  string `toml:"sandbox_root"`
 	TLSCert      string `toml:"tls_cert"`
 	TLSKey       string `toml:"tls_key"`
@@ -31,7 +31,7 @@ type Config struct {
 }
 
 func LoadConfig(path string) (*Config, error) {
-	c := &Config{Host: "127.0.0.1", Port: 8888, AdminUser: "admin", SandboxRoot: "/var/lib/lightpanel/files", UpdateRepo: "acleverfreebird/lightpanel-go"}
+	c := &Config{Host: "127.0.0.1", Port: 8888, AdminUser: "admin", UpdateRepo: "acleverfreebird/lightpanel-go"}
 	if path != "" {
 		f, err := os.Open(path)
 		if err != nil {
@@ -42,7 +42,7 @@ func LoadConfig(path string) (*Config, error) {
 			return nil, err
 		}
 	}
-	for key, dst := range map[string]*string{"HOST": &c.Host, "ADMIN_USER": &c.AdminUser, "PASS_HASH": &c.PasswordHash, "SANDBOX_ROOT": &c.SandboxRoot, "TLS_CERT": &c.TLSCert, "TLS_KEY": &c.TLSKey, "PUBLIC_ORIGIN": &c.PublicOrigin, "LOG_FILE": &c.LogFile, "UPDATE_REPO": &c.UpdateRepo, "UPDATE_MIRROR": &c.UpdateMirror} {
+	for key, dst := range map[string]*string{"HOST": &c.Host, "ADMIN_USER": &c.AdminUser, "PASS_HASH": &c.PasswordHash, "TLS_CERT": &c.TLSCert, "TLS_KEY": &c.TLSKey, "PUBLIC_ORIGIN": &c.PublicOrigin, "LOG_FILE": &c.LogFile, "UPDATE_REPO": &c.UpdateRepo, "UPDATE_MIRROR": &c.UpdateMirror} {
 		if v, ok := os.LookupEnv("LP_" + key); ok {
 			*dst = v
 		}
@@ -92,9 +92,6 @@ func LoadConfig(path string) (*Config, error) {
 	cost, err := bcrypt.Cost([]byte(c.PasswordHash))
 	if err != nil || cost < 10 || cost > 14 {
 		return nil, fmt.Errorf("password_hash must be bcrypt with cost 10..14; run -hash-password")
-	}
-	if !filepath.IsAbs(c.SandboxRoot) || filepath.Clean(c.SandboxRoot) == string(filepath.Separator) {
-		return nil, fmt.Errorf("sandbox_root must be an absolute dedicated directory, never /")
 	}
 	if (c.TLSCert == "") != (c.TLSKey == "") {
 		return nil, fmt.Errorf("both tls_cert and tls_key required")

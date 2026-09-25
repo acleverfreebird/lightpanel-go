@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# LightPanel 卸载脚本。默认保留文件沙箱 /var/lib/lightpanel；--purge 连同删除。
+# LightPanel 卸载脚本。默认保留 /var/lib/lightpanel（旧版本数据目录）；--purge 连同删除。
 set -euo pipefail
 
 SERVICE_NAME="lightpanel"
@@ -23,6 +23,6 @@ if [ "$PURGE" -eq 1 ]; then
   printf '[lightpanel] 已删除 /opt/lightpanel、服务单元与 /var/lib/lightpanel\n'
 else
   printf '[lightpanel] 已删除 /opt/lightpanel 与服务单元\n'
-  printf '[lightpanel] 保留文件沙箱 /var/lib/lightpanel（如需一并删除: sudo bash %s --purge）\n' "$0"
+  printf '[lightpanel] 保留 /var/lib/lightpanel（如需一并删除: sudo bash %s --purge）\n' "$0"
 fi
 printf '[lightpanel] LightPanel 已卸载\n'

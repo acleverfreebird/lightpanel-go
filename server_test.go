@@ -27,8 +27,8 @@ func testPanel(t *testing.T, readOnly bool) (http.Handler, *config.Config) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := &config.Config{AdminUser: "admin", PasswordHash: string(hash), SandboxRoot: t.TempDir(), PublicOrigin: "http://localhost", ReadOnly: readOnly}
-	files, err := sysinfo.NewFiles(cfg.SandboxRoot, sysinfo.MaxUpload)
+	cfg := &config.Config{AdminUser: "admin", PasswordHash: string(hash), PublicOrigin: "http://localhost", ReadOnly: readOnly}
+	files, err := sysinfo.NewFiles(sysinfo.MaxUpload)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,23 +97,25 @@ func TestPanelRoutesAndFileWorkflow(t *testing.T) {
 	if w := request(h, "GET", "/api/file/delete?path=.", "", c, csrf); w.Code != 405 {
 		t.Fatalf("GET mutation %d", w.Code)
 	}
-	if w := request(h, "POST", "/api/file/upload?path=demo.txt", "hello", c, ""); w.Code != 403 {
+	dir := t.TempDir()
+	demo := dir + "/demo.txt"
+	if w := request(h, "POST", "/api/file/upload?path="+url.QueryEscape(demo), "hello", c, ""); w.Code != 403 {
 		t.Fatal("CSRF absent accepted")
 	}
-	if w := request(h, "POST", "/api/file/upload?path=demo.txt", "hello", c, csrf); w.Code != 200 {
+	if w := request(h, "POST", "/api/file/upload?path="+url.QueryEscape(demo), "hello", c, csrf); w.Code != 200 {
 		t.Fatal(w.Code, w.Body.String())
 	}
-	if w := request(h, "POST", "/api/file/chmod", "path=demo.txt&mode=640", c, csrf); w.Code != 200 {
+	if w := request(h, "POST", "/api/file/chmod", "path="+url.QueryEscape(demo)+"&mode=640", c, csrf); w.Code != 200 {
 		t.Fatal(w.Code, w.Body.String())
 	}
-	w := request(h, "GET", "/api/file/download?path=demo.txt", "", c, "")
+	w := request(h, "GET", "/api/file/download?path="+url.QueryEscape(demo), "", c, "")
 	if w.Code != 200 || w.Body.String() != "hello" {
 		t.Fatal("download", w.Code, w.Body.String())
 	}
 	if !strings.HasPrefix(w.Header().Get("Content-Disposition"), "attachment;") {
 		t.Fatal("unsafe download")
 	}
-	if w := request(h, "POST", "/api/file/delete", "path=demo.txt", c, csrf); w.Code != 200 {
+	if w := request(h, "POST", "/api/file/delete", "path="+url.QueryEscape(demo), c, csrf); w.Code != 200 {
 		t.Fatal(w.Code)
 	}
 	for _, p := range []string{"/not-found", "/ws/terminal"} {
@@ -168,12 +170,14 @@ func TestHTMLDownloadIsAttachment(t *testing.T) {
 	// Contract: uploaded HTML remains attachment bytes, not a template response.
 	h, _ := testPanel(t, false)
 	c, csrf := login(t, h)
+	dir := t.TempDir()
+	evil := dir + "/evil.html"
 	payload := "<script>alert(1)</script>"
-	w := request(h, "POST", "/api/file/upload?"+url.Values{"path": {"evil.html"}}.Encode(), payload, c, csrf)
+	w := request(h, "POST", "/api/file/upload?"+url.Values{"path": {evil}}.Encode(), payload, c, csrf)
 	if w.Code != 200 {
 		t.Fatal(w.Code)
 	}
-	w = request(h, "GET", "/api/file/download?path=evil.html", "", c, "")
+	w = request(h, "GET", "/api/file/download?"+url.Values{"path": {evil}}.Encode(), "", c, "")
 	b, _ := io.ReadAll(w.Result().Body)
 	if string(b) != payload || w.Header().Get("Content-Type") != "application/octet-stream" || w.Header().Get("X-Content-Type-Options") != "nosniff" {
 		t.Fatal("unsafe attachment response")
@@ -187,12 +191,14 @@ func TestAuditRecordsTargetWithoutFileContents(t *testing.T) {
 	defer slog.SetDefault(previous)
 	h, _ := testPanel(t, false)
 	c, csrf := login(t, h)
-	w := request(h, "POST", "/api/file/upload?path=audit.txt", "PRIVATE-FILE-CONTENT", c, csrf)
+	dir := t.TempDir()
+	audit := dir + "/audit.txt"
+	w := request(h, "POST", "/api/file/upload?"+url.Values{"path": {audit}}.Encode(), "PRIVATE-FILE-CONTENT", c, csrf)
 	if w.Code != 200 {
 		t.Fatal(w.Code)
 	}
 	logs := buf.String()
-	if !strings.Contains(logs, `"msg":"audit_end"`) || !strings.Contains(logs, `"path":"audit.txt"`) {
+	if !strings.Contains(logs, `"msg":"audit_end"`) || !strings.Contains(logs, `"path":"`+audit+`"`) {
 		t.Fatal("missing operation audit")
 	}
 	for _, secret := range []string{"PRIVATE-FILE-CONTENT", "testing-password-long", csrf, c.Value} {

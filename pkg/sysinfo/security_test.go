@@ -21,12 +21,12 @@ type zeroReader struct{}
 func (zeroReader) Read(b []byte) (int, error) { clear(b); return len(b), nil }
 func TestUploadLimitCleansPartial(t *testing.T) {
 	dir := t.TempDir()
-	f, e := NewFiles(dir, MaxUpload)
+	f, e := NewFiles(MaxUpload)
 	if e != nil {
 		t.Fatal(e)
 	}
 	defer f.Close()
-	r := httptest.NewRequest("POST", "/api/file/upload?path=large", io.LimitReader(zeroReader{}, MaxUpload+1))
+	r := httptest.NewRequest("POST", "/api/file/upload?path="+dir+"/large", io.LimitReader(zeroReader{}, MaxUpload+1))
 	w := httptest.NewRecorder()
 	f.Upload(w, r)
 	if w.Code != 413 {
@@ -36,35 +36,30 @@ func TestUploadLimitCleansPartial(t *testing.T) {
 		t.Fatalf("partial upload retained: %v", e)
 	}
 }
-func TestFileModesAndSymlinkSwap(t *testing.T) {
+func TestFileModesAndUploadConflicts(t *testing.T) {
 	dir := t.TempDir()
-	f, e := NewFiles(dir, MaxUpload)
+	f, e := NewFiles(MaxUpload)
 	if e != nil {
 		t.Fatal(e)
 	}
 	defer f.Close()
-	outside := t.TempDir()
-	if e = os.WriteFile(filepath.Join(outside, "secret"), []byte("outside"), 0600); e != nil {
+	if e = os.WriteFile(filepath.Join(dir, "x"), []byte("x"), 0600); e != nil {
 		t.Fatal(e)
 	}
-	if e = os.Mkdir(filepath.Join(dir, "nested"), 0700); e != nil {
-		t.Fatal(e)
-	}
-	if e = os.Rename(filepath.Join(dir, "nested"), filepath.Join(dir, "old")); e != nil {
-		t.Fatal(e)
-	}
-	if e = os.Symlink(outside, filepath.Join(dir, "nested")); e != nil {
+	// Upload refuses to overwrite an existing entry, symlink or not.
+	if e = os.Symlink(filepath.Join(dir, "x"), filepath.Join(dir, "alias")); e != nil {
 		t.Fatal(e)
 	}
 	w := httptest.NewRecorder()
-	f.Upload(w, httptest.NewRequest("POST", "/api/file/upload?path=nested/new", strings.NewReader("x")))
-	if w.Code == 200 {
-		t.Fatal("upload escaped through changed directory")
+	f.Upload(w, httptest.NewRequest("POST", "/api/file/upload?path="+dir+"/alias", strings.NewReader("y")))
+	if w.Code != 409 {
+		t.Fatalf("upload over symlink %d", w.Code)
 	}
-	if _, e = os.Stat(filepath.Join(outside, "new")); !os.IsNotExist(e) {
-		t.Fatal("outside file created")
+	b, e := os.ReadFile(filepath.Join(dir, "x"))
+	if e != nil || string(b) != "x" {
+		t.Fatalf("symlink target clobbered: %q %v", b, e)
 	}
-	r := httptest.NewRequest("POST", "/api/file/chmod", strings.NewReader("path=x&mode=4777"))
+	r := httptest.NewRequest("POST", "/api/file/chmod", strings.NewReader("path="+dir+"/x&mode=4777"))
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w = httptest.NewRecorder()
 	f.Chmod(w, r)

@@ -31,14 +31,15 @@ def main():
         executable = root / 'lightpanel'
         shutil.copyfile(binary, executable)
         executable.chmod(0o700)
-        (root / 'files').mkdir()
+        workspace = root / 'workspace'
+        workspace.mkdir()
         with socket.socket() as listener:
             listener.bind(('127.0.0.1', 0))
             port = listener.getsockname()[1]
         origin = f'http://127.0.0.1:{port}'
         cfg = root / 'config.toml'
         cfg.write_text(f'host="127.0.0.1"\nport={port}\nadmin_user="admin"\n'
-                       f'password_hash="{TEST_HASH}"\nsandbox_root="{root}/files"\n'
+                       f'password_hash="{TEST_HASH}"\n'
                        f'public_origin="{origin}"\n')
         cfg.chmod(0o600)
         env = {k: v for k, v in os.environ.items() if not k.startswith('LP_')}
@@ -79,15 +80,17 @@ def main():
                     else:
                         raise AssertionError(f'{path} unexpectedly succeeded')
                 expect_status('/api/file/delete', 403, {'path': 'absent'})
+                sample = str(workspace / 'sample.txt')
+                quoted = urllib.parse.quote(sample)
                 payload = b'lightpanel-smoke\n' * 65536
-                with req('/api/file/upload?path=sample.txt', payload, token) as response:
+                with req(f'/api/file/upload?path={quoted}', payload, token) as response:
                     assert response.status == 200
-                with req('/api/file/download?path=sample.txt') as response:
+                with req(f'/api/file/download?path={quoted}') as response:
                     assert response.read() == payload
                     assert response.headers['Content-Disposition'].startswith('attachment;')
-                with req('/api/file/chmod', {'path': 'sample.txt', 'mode': '640'}, token) as response:
+                with req('/api/file/chmod', {'path': sample, 'mode': '640'}, token) as response:
                     assert response.status == 200
-                with req('/api/file/delete', {'path': 'sample.txt'}, token) as response:
+                with req('/api/file/delete', {'path': sample}, token) as response:
                     assert response.status == 200
                 expect_status('/api/file/download?path=../config.toml', 400)
                 def cpu_ticks():
@@ -116,7 +119,7 @@ def main():
                 assert process.returncode == 0, process.returncode
                 audit.seek(0)
                 records = [json.loads(line) for line in audit if line.strip()]
-                assert any(r.get('msg') == 'audit_end' and r.get('path') == 'sample.txt' for r in records)
+                assert any(r.get('msg') == 'audit_end' and r.get('path') == sample for r in records)
                 assert all(PASSWORD not in json.dumps(r) and token not in json.dumps(r) for r in records)
                 result['graceful_shutdown'] = True
                 result['audit_verified'] = True

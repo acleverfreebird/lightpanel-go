@@ -5,7 +5,7 @@ const maxUploadMB = Number(document.body.dataset.maxUpload) || 32;
 const maxEdit = 1024 * 1024;
 const hintDefault = () => `未选择文件 · 最大 ${maxUploadMB} MiB`;
 
-let currentPath = '.', currentOffset = 0, version = 0, items = [], sortMode = 'name', filterText = '';
+let currentPath = '/', currentOffset = 0, version = 0, items = [], sortMode = 'name', filterText = '';
 
 const sorters = {
   'name': (a, b) => dirsFirst(a, b) || a.name.localeCompare(b.name, 'zh-Hans-CN'),
@@ -16,33 +16,41 @@ const sorters = {
 };
 const dirsFirst = (a, b) => (b.is_dir ? 1 : 0) - (a.is_dir ? 1 : 0);
 
+function kindOf(item) {
+  return item.is_dir ? '目录' : item.regular ? '文件' : item.symlink ? '链接' : '特殊';
+}
+function iconOf(item) {
+  return item.is_dir ? '▰' : item.symlink ? '⇱' : '▤';
+}
+
 function render() {
   const term = filterText.trim().toLowerCase();
   const shown = items.filter(item => !term || item.name.toLowerCase().includes(term)).sort(sorters[sortMode] || sorters.name);
   const rows = shown.map(item => {
     const name = el('div', undefined, 'file-name');
-    name.append(el('span', item.is_dir ? '▰' : '▤', `file-icon ${item.is_dir ? 'folder' : ''}`));
-    name.append(item.is_dir ? button(item.name, () => files(item.path, 0), false, 'file-link') : el('span', item.name + (item.regular ? '' : '（特殊文件 / 链接）')));
+    name.append(el('span', iconOf(item), `file-icon ${item.is_dir ? 'folder' : ''}`));
+    name.append(item.is_dir ? button(item.name, () => files(item.path, 0), false, 'file-link')
+      : el('span', item.name + (item.regular ? '' : `（${kindOf(item)}）`)));
     const actions = el('div', undefined, 'actions');
-    if (item.regular) {
+    if (item.regular || item.symlink) {
       const download = el('a', '下载');
       download.href = '/api/file/download?' + new URLSearchParams({ path: item.path }); download.download = item.name;
       actions.append(download);
-      if (item.size <= maxEdit) actions.append(button('编辑', () => openEditor(item), true));
-      actions.append(button('权限', async () => {
-        const mode = await confirmAction({ title: '修改文件权限', description: '设置此文件的读、写和执行权限。', target: item.path, confirm: '保存权限', danger: false, input: item.mode });
-        if (mode === null) return;
-        await mutate('/api/file/chmod', { path: item.path, mode }); await files();
-      }, true));
     }
+    if (item.regular && item.size <= maxEdit) actions.append(button('编辑', () => openEditor(item), true));
+    if (item.regular || item.is_dir) actions.append(button('权限', async () => {
+      const mode = await confirmAction({ title: item.is_dir ? '修改目录权限' : '修改文件权限', description: '设置读、写和执行权限（不含 setuid/setgid）。', target: item.path, confirm: '保存权限', danger: false, input: item.mode });
+      if (mode === null) return;
+      await mutate('/api/file/chmod', { path: item.path, mode }); await files();
+    }, true));
     actions.append(button('重命名', async () => {
       const name = await confirmAction({
-        title: item.is_dir ? '重命名文件夹' : '重命名文件', description: '输入不含 / 的新名称；名称中带 / 可同时移动到子目录。',
+        title: item.is_dir ? '重命名文件夹' : '重命名文件', description: '输入新名称；路径中带 / 可同时移动到其他目录。',
         target: item.path, confirm: '保存名称', danger: false, input: item.name,
-        inputLabel: '新名称', pattern: '[^/\\\\]+', maxLength: 255, placeholder: '新名称', hint: '不能包含 / 或 \\', numeric: false,
+        inputLabel: '新路径', pattern: '.+', maxLength: 4096, placeholder: item.path, hint: '以 / 开头的绝对路径，不能包含 \\ 或 ..', numeric: false,
       });
-      if (name === null || name === item.name) return;
-      await mutate('/api/file/rename', { path: item.path, to: join(currentPath, name) }); await files();
+      if (name === null || name === item.path) return;
+      await mutate('/api/file/rename', { path: item.path, to: normalizePath(name) }); await files();
     }, true));
     actions.append(button('删除', async () => {
       if (!await confirmAction({ title: '删除这个条目？', description: item.is_dir ? '将递归删除该目录及其全部内容，删除后无法通过面板恢复。' : '删除后无法通过面板恢复，请确认已有所需备份。', target: item.path, confirm: item.is_dir ? '递归删除' : '确认删除' })) return;
@@ -55,7 +63,10 @@ function render() {
 }
 
 function join(dir, name) {
-  return dir === '.' ? name : `${dir}/${name}`;
+  return dir === '/' ? `/${name}` : `${dir}/${name}`;
+}
+function parentOf(p) {
+  return p === '/' ? '/' : p.slice(0, p.lastIndexOf('/')) || '/';
 }
 
 export async function files(path = currentPath, offset = currentOffset) {
@@ -63,12 +74,12 @@ export async function files(path = currentPath, offset = currentOffset) {
   const data = await api('/api/files?' + new URLSearchParams({ path, offset }));
   if (request !== version) return;
   currentPath = path; currentOffset = offset; items = data.items;
-  $('#file-path-form [name=path]').value = path;
-  $('#file-up').disabled = path === '.';
-  const crumbs = [button('文件空间', () => files('.', 0))];
-  const parts = path.split('/').filter(part => part && part !== '.');
+  $('#file-path-form [name=path]').value = data.path;
+  $('#file-up').disabled = path === '/';
+  const crumbs = [button('根目录', () => files('/', 0))];
+  const parts = data.path.split('/').filter(Boolean);
   parts.forEach((part, index) => {
-    crumbs.push(el('span', '/'), button(part, () => files(parts.slice(0, index + 1).join('/'), 0)));
+    crumbs.push(el('span', '/'), button(part, () => files('/' + parts.slice(0, index + 1).join('/'), 0)));
   });
   $('#file-breadcrumbs').replaceChildren(...crumbs);
   render();
@@ -78,17 +89,17 @@ export async function files(path = currentPath, offset = currentOffset) {
 
 async function mkdir() {
   const name = await confirmAction({
-    title: '新建文件夹', description: '在当前目录创建文件夹，名称中带 / 可以一次创建多级目录。',
-    target: currentPath === '.' ? '文件空间根目录' : currentPath, confirm: '创建', danger: false, input: '',
-    inputLabel: '文件夹名称', pattern: '.+', maxLength: 400, placeholder: '例如 backups 或 site/assets', hint: '可用 / 表示层级，不能以 / 开头', numeric: false,
+    title: '新建文件夹', description: '在当前目录创建文件夹，路径中带 / 可以一次创建多级目录。',
+    target: currentPath === '/' ? '根目录' : currentPath, confirm: '创建', danger: false, input: '',
+    inputLabel: '文件夹路径', pattern: '.+', maxLength: 4096, placeholder: join(currentPath, '例如 backups'), hint: '绝对路径，可用 / 表示层级', numeric: false,
   });
   if (name === null) return;
-  await mutate('/api/file/mkdir', { path: join(currentPath, name) }); await files();
+  await mutate('/api/file/mkdir', { path: normalizePath(name) }); await files();
 }
 
 async function openEditor(item) {
   const data = await api('/api/file/read?' + new URLSearchParams({ path: item.path }));
-  $('#editor-target').textContent = item.path;
+  $('#editor-target').textContent = data.path;
   $('#editor-text').value = data.content;
   $('#editor-dialog').showModal();
   $('#editor-text').focus();
@@ -96,7 +107,7 @@ async function openEditor(item) {
 
 export function setupFiles() {
   $('#file-path-form').addEventListener('submit', guard(() => files(normalizePath(new FormData($('#file-path-form')).get('path')), 0)));
-  $('#file-up').addEventListener('click', guard(() => files(currentPath.split('/').slice(0, -1).join('/') || '.', 0)));
+  $('#file-up').addEventListener('click', guard(() => files(parentOf(currentPath), 0)));
   $('#file-prev').addEventListener('click', guard(() => files(currentPath, Math.max(0, currentOffset - 200))));
   $('#file-next').addEventListener('click', guard(() => files(currentPath, currentOffset + 200)));
   $('#file-filter').value = '';

@@ -36,11 +36,6 @@ func TestConfigFailsClosed(t *testing.T) {
 	if _, err := LoadConfig(""); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("LP_SANDBOX_ROOT", "/")
-	if _, err := LoadConfig(""); err == nil {
-		t.Fatal("root sandbox allowed")
-	}
-	t.Setenv("LP_SANDBOX_ROOT", t.TempDir())
 	t.Setenv("LP_MAX_UPLOAD_MB", "oops")
 	if _, err := LoadConfig(""); err == nil {
 		t.Fatal("invalid upload limit accepted")
@@ -75,5 +70,16 @@ func TestConfigRejectsUnknownKey(t *testing.T) {
 	}
 	if _, err := LoadConfig(p); err == nil {
 		t.Fatal("unknown field ignored")
+	}
+}
+func TestConfigAcceptsDeprecatedSandboxRoot(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "test.toml")
+	hash, _ := bcrypt.GenerateFromPassword([]byte("a-long-test-password"), 10)
+	body := "password_hash = \"" + string(hash) + "\"\nsandbox_root = \"/var/lib/lightpanel/files\"\n"
+	if err := os.WriteFile(p, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfig(p); err != nil {
+		t.Fatalf("deprecated sandbox_root rejected: %v", err)
 	}
 }

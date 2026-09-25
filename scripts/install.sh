@@ -6,7 +6,6 @@ set -euo pipefail
 REPO="${LP_REPO:-acleverfreebird/lightpanel-go}"
 REF="${LP_REF:-main}"
 INSTALL_DIR="/opt/lightpanel"
-SANDBOX_DIR="/var/lib/lightpanel/files"
 SERVICE_NAME="lightpanel"
 UNIT="/etc/systemd/system/${SERVICE_NAME}.service"
 GO_FALLBACK="go1.25.0"
@@ -212,16 +211,14 @@ download_release() {
 write_config() {
   local dst="$INSTALL_DIR/config.toml" hash="$1"
   awk -v host="$HOST" -v port="$PORT" -v user="$ADMIN_USER" -v hash="$hash" \
-      -v sandbox="$SANDBOX_DIR" \
       -v origin="${ORIGIN:-http://127.0.0.1:$PORT}" -v ro="$READ_ONLY" '
     { gsub(/__HOST__/, host); gsub(/__PORT__/, port); gsub(/__USER__/, user);
-      gsub(/__HASH__/, hash); gsub(/__SANDBOX__/, sandbox); gsub(/__ORIGIN__/, origin);
+      gsub(/__HASH__/, hash); gsub(/__ORIGIN__/, origin);
       gsub(/__RO__/, ro); print }' <<'EOF' > "$dst"
 host = "__HOST__"
 port = __PORT__
 admin_user = "__USER__"
 password_hash = "__HASH__"
-sandbox_root = "__SANDBOX__"
 public_origin = "__ORIGIN__"
 read_only = __RO__
 tls_cert = ""
@@ -253,10 +250,8 @@ RestartSec=3
 TimeoutStopSec=15
 UMask=0077
 NoNewPrivileges=true
-PrivateTmp=true
-ProtectHome=true
-ProtectSystem=full
-ReadWritePaths=/var/lib/lightpanel/files -/etc/ufw
+# 文件管理需要访问整个文件系统（/home、/etc、/tmp 等），因此不启用
+# ProtectSystem/ProtectHome/PrivateTmp/ReadWritePaths 等文件系统隔离。
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
@@ -293,8 +288,8 @@ else
 fi
 
 # ---- 安装 ----
-log "安装目录 $INSTALL_DIR 与文件沙箱 $SANDBOX_DIR"
-install -d -m 0750 "$INSTALL_DIR" "$SANDBOX_DIR"
+log "安装目录 $INSTALL_DIR"
+install -d -m 0750 "$INSTALL_DIR"
 install -m 0755 "$WORK/lightpanel" "$INSTALL_DIR/lightpanel"
 
 CONFIG_NEW=0
@@ -335,7 +330,6 @@ cat <<SUMMARY
 [lightpanel] 安装完成
   二进制:   $INSTALL_DIR/lightpanel ($ARCH)
   配置:     $INSTALL_DIR/config.toml
-  文件沙箱: $SANDBOX_DIR
   访问地址: $FINAL_ORIGIN
 
 远程访问（SSH 隧道，在本地机器执行）:

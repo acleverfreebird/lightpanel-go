@@ -13,8 +13,8 @@ import os
 
 with tempfile.TemporaryDirectory(prefix='lightpanel-ui-') as directory:
     root = Path(directory)
-    (root / 'files' / 'backups').mkdir(parents=True)
-    (root / 'files' / 'readme.txt').write_text('LightPanel UI validation fixture\n')
+    (root / 'workspace' / 'backups').mkdir(parents=True)
+    (root / 'workspace' / 'readme.txt').write_text('LightPanel UI validation fixture\n')
     config = root / 'config.toml'
     readonly = '--readonly' in sys.argv
     port = 8893 if readonly else 8892
@@ -22,7 +22,6 @@ with tempfile.TemporaryDirectory(prefix='lightpanel-ui-') as directory:
 port = {port}
 admin_user = "admin"
 password_hash = "$2a$10$rsjl2q3/rV/bLuwfx4vf0OYE7r/n.0mbGv9vNwlRiTS5OD.akczYG"
-sandbox_root = "{root}/files"
 public_origin = "http://127.0.0.1:{port}"
 read_only = {str(readonly).lower()}
 ''')

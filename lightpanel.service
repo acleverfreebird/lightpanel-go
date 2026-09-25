@@ -14,10 +14,8 @@ RestartSec=3
 TimeoutStopSec=15
 UMask=0077
 NoNewPrivileges=true
-PrivateTmp=true
-ProtectHome=true
-ProtectSystem=full
-ReadWritePaths=/var/lib/lightpanel/files -/etc/ufw
+# 文件管理需要访问整个文件系统（/home、/etc、/tmp 等），因此不启用
+# ProtectSystem/ProtectHome/PrivateTmp/ReadWritePaths 等文件系统隔离。
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
