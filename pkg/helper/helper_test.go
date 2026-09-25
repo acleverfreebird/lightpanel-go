@@ -11,7 +11,7 @@ import (
 
 func TestCheckServiceACL(t *testing.T) {
 	acl := map[string][]string{
-		"nginx.service": {"start", "restart"},
+		"nginx.service": {"start", "restart", "enable", "disable", "reload"},
 		"*":             {"stop"},
 	}
 	cases := []struct {
@@ -23,8 +23,12 @@ func TestCheckServiceACL(t *testing.T) {
 		{"nginx.service", "stop", true}, // union: the "*" wildcard also grants stop
 		{"caddy.service", "stop", true}, // wildcard unit
 		{"caddy.service", "start", false},
-		{"evil", "start", false},           // not a unit
-		{"nginx.service", "enable", false}, // not a whitelisted action
+		{"evil", "start", false}, // not a unit
+		{"nginx.service", "enable", true},
+		{"nginx.service", "disable", true},
+		{"nginx.service", "reload", true},
+		{"caddy.service", "enable", false},
+		{"nginx.service", "mask", false}, // not a whitelisted action
 		{"", "start", false},
 		{"../../etc/passwd.service", "start", false},
 	}
@@ -45,13 +49,13 @@ func TestValidateServicesACL(t *testing.T) {
 	if err := (ValidateServicesACL)(map[string][]string{"nginx": {"start"}}); err == nil {
 		t.Error("non-.service unit accepted")
 	}
-	if err := (ValidateServicesACL)(map[string][]string{"nginx.service": {"enable"}}); err == nil {
+	if err := (ValidateServicesACL)(map[string][]string{"nginx.service": {"mask"}}); err == nil {
 		t.Error("non-whitelisted action accepted")
 	}
 	if err := (ValidateServicesACL)(map[string][]string{"nginx.service": {}}); err != nil {
 		t.Errorf("explicit empty grant should be allowed: %v", err)
 	}
-	if err := (ValidateServicesACL)(map[string][]string{"*": {"start", "stop", "restart"}}); err != nil {
+	if err := (ValidateServicesACL)(map[string][]string{"*": {"start", "stop", "restart", "enable", "disable", "reload"}}); err != nil {
 		t.Errorf("wildcard unit rejected: %v", err)
 	}
 }

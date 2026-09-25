@@ -12,14 +12,14 @@ import (
 
 // Operations. One request carries exactly one operation.
 const (
-	OpService        = "service"         // unit + start|stop|restart, gated by the per-unit ACL
+	OpService        = "service"         // unit + whitelisted action, gated by the per-unit ACL
 	OpFirewallStatus = "firewall_status" // read-only ufw/firewalld status
 	OpFirewall       = "firewall"        // add/remove a port rule
 	OpKill           = "kill"            // signal a process by pinned identity
 	OpUpdate         = "update"          // verify + install a checksummed update and restart the panel
 )
 
-var serviceActions = map[string]bool{"start": true, "stop": true, "restart": true}
+var serviceActions = map[string]bool{"start": true, "stop": true, "restart": true, "reload": true, "enable": true, "disable": true}
 
 // ValidServiceAction reports whether action is a helper-permitted systemd action.
 func ValidServiceAction(action string) bool { return serviceActions[action] }

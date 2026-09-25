@@ -48,7 +48,7 @@ func ValidateServicesACL(acl map[string][]string) error {
 		}
 		for _, a := range actions {
 			if !ValidServiceAction(a) {
-				return fmt.Errorf("helper.services: unit %q has invalid action %q (allowed: start, stop, restart)", unit, a)
+				return fmt.Errorf("helper.services: unit %q has invalid action %q (allowed: start, stop, restart, reload, enable, disable)", unit, a)
 			}
 		}
 	}

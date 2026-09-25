@@ -387,7 +387,7 @@ NoNewPrivileges=true
 # helper 需要写 /opt/lightpanel（在线更新换二进制）与 /etc/ufw（ufw 规则）；
 # 其余文件系统一律只读。firewalld 走 D-Bus，不需要本地写权限。
 ProtectSystem=strict
-ReadWritePaths=/opt/lightpanel -/etc/ufw
+ReadWritePaths=/opt/lightpanel -/etc/ufw -/etc/systemd/system
 ProtectHome=true
 PrivateTmp=true
 ProtectKernelTunables=true
