@@ -122,3 +122,16 @@ root 运行 `lightpanel helper -c <配置>`，非特权用户 `lp-panel`（uid 1
 - 日志读取依赖 `systemd-journal` 组（单元 SupplementaryGroups 已声明）。
 - helper 的更新安装信任面板转发的 Release 资产 + SHA256 清单（均来自 HTTPS Release 源），并复核 staging 目录属主与权限；上游 Release 被篡改时该防线同样失效，与 root 模式的自更新信任链一致。
 - helper 单元启用 `ProtectSystem=strict`（仅 `/opt/lightpanel`、`/etc/ufw` 可写）；ufw 依赖内核模块按需加载的场景未逐一验证，异常时可在单元中放宽。
+
+## 2026-09-25 运行诊断与交付完善复验
+
+新增概览页「运行诊断」面板与 `GET /api/health`：报告运行模式（root/helper/普通/只读）、systemd 运行环境、系统工具（systemctl/journalctl/ufw/firewall-cmd）可用性、helper 配置投影与 socket 可达性，并输出中文告警/说明；只读投影不含路径、用户名与连接错误详情，前端每 30 秒刷新。交付层新增 `.github/workflows/ci.yml`（push/PR：vet、race 测试、go mod verify、JS 单测、amd64/arm64 构建、真实本机 HTTP 冒烟），README 与当前能力对齐。
+
+WSL Ubuntu 24.04（Go 1.27.1）实测：
+
+- `go vet ./...`、`gofmt` 通过；`go test -race -count=1 ./...` 5 个包全部通过（含 `TestConfigHelperSection` 过时用例修正：enable/disable 已是白名单动作）。
+- CGO_ENABLED=0 双架构（amd64/arm64）构建通过。
+- `python3 scripts/smoke.py`（本机回环实例）：启动 19.0 ms、RSS 12.1 MiB、指标 100 次请求 53 ms、1.06 MiB 文件往返、优雅关闭与审计验证均通过。
+- CI 中 race 与冒烟作业使用真实 Linux runner；诊断端点受登录保护（挂载在认证路由下）。
+
+已知限制不变：未在公网/多发行版实机认证；helper 授权以 helper 进程实际配置为准，诊断面板的可达性检查不代表授权通过。

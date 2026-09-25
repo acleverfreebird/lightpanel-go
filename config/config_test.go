@@ -125,12 +125,12 @@ allow_update = true
 	}
 
 	for _, bad := range []string{
-		"[helper]\nallowed_users = []\n",                                                            // no users
-		"[helper]\nallowed_users = [\"Bad Name\"]\n",                                                // invalid name
-		"[helper]\nsocket = \"run/helper.sock\"\nallowed_users = [\"lp\"]\n",                        // relative socket
-		"[helper]\nsocket = \"/run/../helper.sock\"\nallowed_users = [\"lp\"]\n",                    // traversal socket
-		"[helper]\nstaging_dir = \"var/tmp\"\nallowed_users = [\"lp\"]\n",                           // relative staging
-		"[helper]\nallowed_users = [\"lp\"]\n[helper.services]\n\"nginx\" = [\"start\"]\n",          // not a unit
+		"[helper]\nallowed_users = []\n",                                                               // no users
+		"[helper]\nallowed_users = [\"Bad Name\"]\n",                                                   // invalid name
+		"[helper]\nsocket = \"run/helper.sock\"\nallowed_users = [\"lp\"]\n",                           // relative socket
+		"[helper]\nsocket = \"/run/../helper.sock\"\nallowed_users = [\"lp\"]\n",                       // traversal socket
+		"[helper]\nstaging_dir = \"var/tmp\"\nallowed_users = [\"lp\"]\n",                              // relative staging
+		"[helper]\nallowed_users = [\"lp\"]\n[helper.services]\n\"nginx\" = [\"start\"]\n",             // not a unit
 		"[helper]\nallowed_users = [\"lp\"]\n[helper.services]\n\"nginx.service\" = [\"uninstall\"]\n", // action not whitelisted
 	} {
 		if _, err := LoadConfig(write(t, bad)); err == nil {
