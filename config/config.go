@@ -59,6 +59,9 @@ type HelperConfig struct {
 	// AllowApps 允许应用商店安装：helper 通过系统软件包管理器安装固定目录
 	// 中的应用；应用名经白名单校验，全部参数在 helper 端重建。
 	AllowApps bool `toml:"allow_apps"`
+	// AllowDatabases 允许数据库管理操作：列出/创建/删除数据库与用户管理；
+	// 引擎、名称与全部参数在 helper 端重建，密码仅经 stdin 传递。
+	AllowDatabases bool `toml:"allow_databases"`
 	// StagingDir 是非 root 面板下载更新资产的目录（属主必须是面板用户，权限
 	// 不得对组/其他用户可写；helper 安装前会复核）。
 	StagingDir string `toml:"staging_dir"`

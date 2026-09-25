@@ -1,7 +1,10 @@
 import { $, api, mutate, guard, el, badge, button, message } from './ui.js';
 
 const managerNames = { 'apt-get': 'APT', dnf: 'DNF', yum: 'YUM', zypper: 'ZYpp', apk: 'APK' };
-const appNames = { nginx: 'Nginx', apache: 'Apache', docker: 'Docker', certbot: 'Certbot' };
+const appNames = {
+  nginx: 'Nginx', apache: 'Apache', docker: 'Docker', certbot: 'Certbot',
+  mysql: 'MySQL', mariadb: 'MariaDB', postgresql: 'PostgreSQL', redis: 'Redis',
+};
 
 let version = 0, items = [], polling = false, job = {};
 

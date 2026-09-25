@@ -62,7 +62,8 @@ func (m *AppManager) detectPackageManager(ctx context.Context) string {
 }
 
 // Apps reports the package manager, the catalog with detected state and the
-// engine details reused from site detection.
+// engine details reused from site detection. Database catalog entries take
+// their state from the database engine probes.
 func (m *AppManager) Apps(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	manager := m.detectPackageManager(ctx)
@@ -70,6 +71,11 @@ func (m *AppManager) Apps(w http.ResponseWriter, r *http.Request) {
 	engines := make(map[string]EngineInfo, len(env))
 	for _, e := range env {
 		engines[e.Engine] = e
+	}
+	for _, e := range detectDatabaseEngines(ctx, m.Run) {
+		if _, exists := engines[e.Engine]; !exists || !engines[e.Engine].Installed {
+			engines[e.Engine] = e
+		}
 	}
 	items := make([]AppInfo, 0, len(helper.AppCatalog))
 	for _, spec := range helper.AppCatalog {

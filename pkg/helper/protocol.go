@@ -19,6 +19,7 @@ const (
 	OpUpdate         = "update"          // verify + install a checksummed update and restart the panel
 	OpSite           = "site"            // managed web-site configuration, gated by allow_sites
 	OpApp            = "app"             // install a catalog app via the system package manager, gated by allow_apps
+	OpDatabase       = "database"        // managed database operations, gated by allow_databases
 )
 
 var serviceActions = map[string]bool{"start": true, "stop": true, "restart": true, "reload": true, "enable": true, "disable": true}
@@ -47,6 +48,22 @@ var appActions = map[string]bool{"install": true}
 // ValidAppAction reports whether action is a helper-permitted app operation.
 func ValidAppAction(action string) bool { return appActions[action] }
 
+// Database actions for OpDatabase. As with sites and apps, the helper
+// rebuilds every argument (see databases.go) — the panel sends only the
+// engine, a validated name and, for user operations, the password. The
+// password is transported in the Request (never argv) and is fed to the
+// client binary over stdin helper-side, so it never appears in a process list.
+var dbActions = map[string]bool{
+	"list":         true, // read-only database (and user) listing
+	"create-db":    true, // create one database
+	"drop-db":      true, // drop one database
+	"create-user":  true, // create a local user with a password
+	"set-password": true, // change an existing user's password
+}
+
+// ValidDBAction reports whether action is a helper-permitted database operation.
+func ValidDBAction(action string) bool { return dbActions[action] }
+
 // Request is one privileged operation. Fields not relevant to Op are ignored.
 type Request struct {
 	Op        string `json:"op"`
@@ -71,6 +88,13 @@ type Request struct {
 	// OpApp fields. App must be a catalog key from apps.go; the helper
 	// re-derives the package name and every argument.
 	App string `json:"app,omitempty"`
+	// OpDatabase fields. DB must be a database engine key from databases.go,
+	// Name a validated database/user name and Password a validated password
+	// used only for user operations. The helper re-derives every argv element
+	// and feeds the password over stdin, never argv.
+	DB       string `json:"db,omitempty"`
+	Name     string `json:"name,omitempty"`
+	Password string `json:"password,omitempty"`
 }
 
 // Response is the helper's verdict. OK=false carries a human-readable Error

@@ -6,12 +6,12 @@ import (
 )
 
 func TestValidAppName(t *testing.T) {
-	for _, name := range []string{"nginx", "apache", "docker", "certbot"} {
+	for _, name := range []string{"nginx", "apache", "docker", "certbot", "mysql", "mariadb", "postgresql", "redis"} {
 		if !ValidAppName(name) {
 			t.Errorf("ValidAppName(%q) = false, want true", name)
 		}
 	}
-	for _, name := range []string{"", "nginx ", "Nginx", "nginx-extra", "nginx;rm", "certbot\n", "../../etc"} {
+		for _, name := range []string{"", "nginx ", "Nginx", "nginx-extra", "nginx;rm", "certbot\n", "../../etc", "mysql8", "postgres", "mongodb"} {
 		if ValidAppName(name) {
 			t.Errorf("ValidAppName(%q) = true, want false", name)
 		}
@@ -40,6 +40,11 @@ func TestAppInstallSteps(t *testing.T) {
 		{"apt-get", "apache", [][]string{{"apt-get", "update"}, {"apt-get", "install", "-y", "apache2"}}},
 		{"apt-get", "docker", [][]string{{"apt-get", "update"}, {"apt-get", "install", "-y", "docker.io"}}},
 		{"apt-get", "certbot", [][]string{{"apt-get", "update"}, {"apt-get", "install", "-y", "certbot"}}},
+		{"apt-get", "mysql", [][]string{{"apt-get", "update"}, {"apt-get", "install", "-y", "mysql-server"}}},
+		{"apt-get", "mariadb", [][]string{{"apt-get", "update"}, {"apt-get", "install", "-y", "mariadb-server"}}},
+		{"dnf", "postgresql", [][]string{{"dnf", "install", "-y", "postgresql-server"}}},
+		{"apt-get", "redis", [][]string{{"apt-get", "update"}, {"apt-get", "install", "-y", "redis-server"}}},
+		{"apk", "mariadb", [][]string{{"apk", "add", "mariadb"}}},
 		{"dnf", "apache", [][]string{{"dnf", "install", "-y", "httpd"}}},
 		{"yum", "apache", [][]string{{"yum", "install", "-y", "httpd"}}},
 		{"dnf", "nginx", [][]string{{"dnf", "install", "-y", "nginx"}}},
@@ -58,7 +63,8 @@ func TestAppInstallSteps(t *testing.T) {
 	}
 	for _, c := range []struct{ manager, app string }{
 		{"", "nginx"}, {"apt", "nginx"}, {"pacman", "nginx"},
-		{"apt-get", ""}, {"apt-get", "mysql"}, {"apt-get", "nginx; rm -rf /"},
+		{"apt-get", ""}, {"apt-get", "mysql8"}, {"apt-get", "nginx; rm -rf /"},
+		{"apk", "mysql"}, {"zypper", "mysql"}, // no package mapped for these managers
 	} {
 		if _, err := AppInstallSteps(c.manager, c.app); err == nil {
 			t.Errorf("AppInstallSteps(%q, %q) accepted, want rejection", c.manager, c.app)

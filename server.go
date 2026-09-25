@@ -73,6 +73,12 @@ func newHandler(cfg *config.Config, files *sysinfo.Files, manager *sysinfo.Manag
 	register("GET /api/apps", apps.Apps)
 	register("POST /api/apps/install", apps.AppInstall)
 	register("GET /api/apps/job", apps.InstallJob)
+	databases := sysinfo.NewDatabaseManager()
+	register("GET /api/databases", databases.Databases)
+	register("POST /api/databases/create", databases.DBCreate)
+	register("POST /api/databases/delete", databases.DBDrop)
+	register("POST /api/databases/user", databases.DBUserCreate)
+	register("POST /api/databases/user-password", databases.DBUserPassword)
 	return security(cfg, files.UploadLimit(), mux), nil
 }
 

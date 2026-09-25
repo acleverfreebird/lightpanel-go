@@ -27,9 +27,13 @@ allow_update = true
 # certbot 证书签发。最小特权模式下创建站点需要打开它。
 allow_sites = true
 # allow_apps = true 时 helper 授权应用商店安装：通过系统软件包管理器安装
-# 固定目录中的应用（nginx/apache/docker/certbot）；应用名经白名单校验，
-# 全部安装参数在 helper 端重建。最小特权模式下应用商店安装需要打开它。
+# 固定目录中的应用（nginx/apache/docker/certbot/mysql/mariadb/postgresql/redis）；
+# 应用名经白名单校验，全部安装参数在 helper 端重建。最小特权模式下应用商店
+# 安装需要打开它。
 allow_apps = true
+# allow_databases = true 时 helper 授权数据库管理操作：列出/创建/删除数据库
+# 与用户管理；引擎、名称与全部参数在 helper 端重建，密码仅经 stdin 传递。
+allow_databases = true
 # socket = "/run/lightpanel/helper.sock"
 # staging_dir = "/var/lib/lightpanel/update"
 
@@ -37,3 +41,9 @@ allow_apps = true
 # 空表 = 拒绝一切服务控制；"*" 条目把动作授予所有单元（旧版行为）。
 [helper.services]
 "nginx.service" = ["start", "stop", "restart"]
+# 数据库管理页的启停/重启按钮走服务控制；最小特权模式下按需加入数据库单元：
+# "mysql.service" = ["start", "stop", "restart"]
+# "mariadb.service" = ["start", "stop", "restart"]
+# "mysqld.service" = ["start", "stop", "restart"]
+# "postgresql.service" = ["start", "stop", "restart"]
+# "redis-server.service" = ["start", "stop", "restart"]

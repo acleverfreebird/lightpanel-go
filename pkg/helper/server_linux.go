@@ -43,6 +43,10 @@ type ServerConfig struct {
 	// App names and every argument are rebuilt helper-side from a fixed
 	// catalog, so this is also a single opt-in grant.
 	AllowApps bool
+	// AllowDatabases gates managed database operations (list, create/drop
+	// database, user management). Engines, names and every argument are
+	// rebuilt helper-side from databases.go, so this is a single opt-in grant.
+	AllowDatabases bool
 	// PanelUnit is the systemd unit restarted after a successful self-update.
 	PanelUnit string
 }
@@ -184,7 +188,7 @@ func Run(ctx context.Context, cfg ServerConfig, log *slog.Logger) error {
 		_ = l.Close()
 	}()
 	log.Info("helper_listening", "socket", cfg.Socket, "allowed_users", cfg.AllowedUsers,
-		"services", len(cfg.Services), "firewall", cfg.AllowFirewall, "kill", cfg.AllowKill, "update", cfg.AllowUpdate, "sites", cfg.AllowSites, "apps", cfg.AllowApps)
+		"services", len(cfg.Services), "firewall", cfg.AllowFirewall, "kill", cfg.AllowKill, "update", cfg.AllowUpdate, "sites", cfg.AllowSites, "apps", cfg.AllowApps, "databases", cfg.AllowDatabases)
 	slots := make(chan struct{}, 16)
 	for {
 		conn, err := l.Accept()
@@ -297,6 +301,8 @@ func (s *server) dispatch(uid int, req *Request) Response {
 			return Response{Error: "unsupported app action"}
 		}
 		return s.appInstall(req)
+	case OpDatabase:
+		return s.database(req)
 	default:
 		return Response{Error: "unknown operation"}
 	}

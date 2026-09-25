@@ -32,7 +32,7 @@ func TestAppsHandlerDetectsNothingWithoutTools(t *testing.T) {
 		t.Errorf("expected empty package manager, got: %s", body)
 	}
 	// The whole catalog stays visible so the store can render install targets.
-	for _, app := range []string{"nginx", "apache", "docker", "certbot"} {
+	for _, app := range []string{"nginx", "apache", "docker", "certbot", "mysql", "mariadb", "postgresql", "redis"} {
 		if !strings.Contains(body, `"name":"`+app+`"`) {
 			t.Errorf("catalog missing app %q, got: %s", app, body)
 		}
@@ -45,7 +45,7 @@ func TestAppsHandlerDetectsNothingWithoutTools(t *testing.T) {
 func TestAppInstallRejectsUnknownApp(t *testing.T) {
 	m := appsTestManager(func(context.Context, string, ...string) (string, error) { return "", ErrUnavailable })
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest("POST", "/api/apps/install", strings.NewReader(url.Values{"name": {"mysql"}}.Encode()))
+	req := httptest.NewRequest("POST", "/api/apps/install", strings.NewReader(url.Values{"name": {"mysql8"}}.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	m.AppInstall(rec, req)
 	if rec.Code != 400 {

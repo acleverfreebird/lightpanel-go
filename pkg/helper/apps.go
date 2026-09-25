@@ -33,6 +33,18 @@ var AppCatalog = []AppSpec{
 	{Name: "certbot", Title: "Certbot", Description: "Let's Encrypt 客户端，为站点签发免费的 HTTPS 证书", Packages: map[string]string{
 		"apt-get": "certbot", "dnf": "certbot", "yum": "certbot", "zypper": "certbot", "apk": "certbot",
 	}},
+	{Name: "mysql", Title: "MySQL", Description: "广泛使用的关系型数据库，安装后可在「数据库管理」中建库与管用户", Packages: map[string]string{
+		"apt-get": "mysql-server", "dnf": "mysql-server", "yum": "mysql-server",
+	}},
+	{Name: "mariadb", Title: "MariaDB", Description: "MySQL 兼容分支，各发行版官方仓库均有提供", Packages: map[string]string{
+		"apt-get": "mariadb-server", "dnf": "mariadb-server", "yum": "mariadb-server", "zypper": "mariadb", "apk": "mariadb",
+	}},
+	{Name: "postgresql", Title: "PostgreSQL", Description: "功能最先进的开源关系型数据库，安装后可在「数据库管理」中管理", Packages: map[string]string{
+		"apt-get": "postgresql", "dnf": "postgresql-server", "yum": "postgresql-server", "zypper": "postgresql-server", "apk": "postgresql",
+	}},
+	{Name: "redis", Title: "Redis", Description: "内存键值数据库，常用作缓存与消息队列", Packages: map[string]string{
+		"apt-get": "redis-server", "dnf": "redis", "yum": "redis", "zypper": "redis", "apk": "redis",
+	}},
 }
 
 // PackageManagerBinaries lists the supported package managers in detection
