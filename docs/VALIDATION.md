@@ -151,3 +151,15 @@ WSL Ubuntu 24.04（Go 1.27.1）实测：
 - 非特权面板模式下写 `/etc` 配置受 OS 权限限制（403）；如需在最小特权模式下使用原生站点创建，需为 helper 增加配置写入操作或放宽托管目录权限。Docker 命令以面板进程身份执行，面板用户需在 docker 组或 root 模式。
 - Apache 非标准端口会在配置中写入 `Listen`，重复监听会导致重载失败，错误输出会原样返回给管理员。
 - 重载动作经 helper 时要求 `[helper.services]` 为 `nginx.service` / `apache2.service` / `httpd.service` 授予 `reload`，未授予时返回 502 并提示 ACL 拒绝。
+
+## 2026-09-25 站点管理最小特权支持、反代站点与 Let's Encrypt
+
+在站点管理基础上新增三项能力：
+
+- **helper 托管站点操作**（`OpSite`，`allow_sites = true` 整体授权）：`create`/`delete`/`reload`/`issue-cert`/`cert-status`。面板不发送文件内容——create 请求只携带参数（名称、引擎、kind、域名、端口、根目录、反代目标），helper 用共享原语在本地重新生成配置后原子写入并建立 sites-enabled 软链；delete 由 helper 复核托管目录与 `# managed by lightpanel` 标记；reload 由 helper 自行解析 nginx/apache2/httpd 单元，无需逐单元 ACL。校验器、模板、托管目录清单下沉到 `pkg/helper/sites.go`（无构建标签，两端共享），sysinfo 侧仅保留别名。
+- **反向代理站点**：原生引擎 `mode=proxy` + `proxy_target`（严格校验 `http(s)://host[:port][/path]`，拒绝 userinfo/query/fragment）。nginx 模板生成 `proxy_pass` + Host/X-Real-IP/X-Forwarded-* 头；Apache 模板生成 `ProxyPreserveHost`/`ProxyPass`/`ProxyPassReverse`（需 mod_proxy）。
+- **Let's Encrypt 证书**：环境检测追加 certbot 探测；`GET /api/sites/certs` 返回 `certbot certificates` 原文（未安装 501）；`POST /api/sites/cert` 以 `certbot -n --agree-tos -m <email> -d <domain> --nginx|--apache` 签发（仅具体域名，通配符需 DNS-01 明确拒绝；邮箱格式校验）。超时链路：面板 ctx 300s → helper 连接预算按需放宽至 5 分钟（`issue-cert`/`cert-status`）→ helper `runTimeout` 280s；`Client.Call` 取 ctx 截止时间与 60s 基线的较大者、上限 6 分钟。
+- 修复：`POST /api/sites/action` 原生站点 `delete` 上一版误走 Docker 分支，本轮已补齐（helper 路由或本地删除 + 引擎重载）。
+- 测试：`pkg/helper/sites_test.go`（校验器边界、SiteConf 错误路径、托管路径判定）、`pkg/sysinfo/sites_test.go` 新增反代模板、helper 路由（create/delete）、证书签发与列表端点测试；`scripts/sites.test.mjs` 校验证书面板与 mode 字段接线。`go vet`、`gofmt`、`go test`、`node --test` 全部通过。
+
+配置样例：`config.toml` 的 `[helper]` 段新增 `allow_sites = true`。

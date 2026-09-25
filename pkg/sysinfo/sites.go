@@ -9,7 +9,7 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
-	"path"
+
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -20,78 +20,21 @@ import (
 	"lightpanel/pkg/helper"
 )
 
-// ManagedMarker marks configuration files and containers this module created,
-// so destructive actions only ever touch objects the panel owns.
-const ManagedMarker = "# managed by lightpanel"
+// Site validation, configuration templates and path rules live in
+// pkg/helper/sites.go and are shared with the helper process, so both ends
+// accept exactly the same inputs. The helpers below keep the historical
+// unexported call sites readable.
+var dockerPortFactor = regexp.MustCompile(`:(\d+)->(\d+)/`)
 
-var (
-	siteNamePattern  = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
-	imageRefPattern  = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._/-]{0,127}(:[a-zA-Z0-9._-]{1,64})?(@sha256:[a-f0-9]{64})?$`)
-	dockerPortFactor = regexp.MustCompile(`:(\d+)->(\d+)/`)
-)
+func validSiteName(name string) bool              { return helper.ValidSiteName(name) }
+func validServerName(name string) bool            { return helper.ValidServerName(name) }
+func validImageRef(ref string) bool               { return helper.ValidImageRef(ref) }
+func validPort(p int) bool                        { return helper.ValidPort(p) }
+func isManagedConfPath(id string) bool            { return helper.IsManagedConfPath(id) }
+func validDocumentRoot(root string) bool          { return helper.ValidDocumentRoot(root) }
+func nativeConfPath(e, n string) (string, string) { return helper.NativeConfPath(e, n) }
 
-func validSiteName(name string) bool { return siteNamePattern.MatchString(name) }
-
-// validServerName accepts DNS hostnames, one leading wildcard label and the
-// nginx catch-all "_". It is a syntactic gate only; everything ends up inside
-// a quoted-safe config template without shell involvement.
-func validServerName(name string) bool {
-	if name == "_" {
-		return true
-	}
-	name = strings.TrimPrefix(name, "*.")
-	if len(name) == 0 || len(name) > 253 {
-		return false
-	}
-	for _, label := range strings.Split(name, ".") {
-		if label == "" || len(label) > 63 {
-			return false
-		}
-		for i := 0; i < len(label); i++ {
-			c := label[i]
-			ok := c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_'
-			if !ok {
-				return false
-			}
-			if (i == 0 || i == len(label)-1) && c == '-' {
-				return false
-			}
-		}
-	}
-	return true
-}
-
-func validImageRef(ref string) bool {
-	return imageRefPattern.MatchString(ref) && !strings.Contains(ref, "..")
-}
-
-func validPort(p int) bool { return p >= 1 && p <= 65535 }
-
-// managedConfDirs bounds which configuration files the panel will ever read,
-// list or delete. Everything outside is invisible to this module.
-var managedConfDirs = []string{
-	"/etc/nginx/sites-enabled/",
-	"/etc/nginx/sites-available/",
-	"/etc/nginx/conf.d/",
-	"/etc/apache2/sites-enabled/",
-	"/etc/apache2/sites-available/",
-	"/etc/apache2/conf.d/",
-	"/etc/httpd/conf.d/",
-}
-
-func isManagedConfPath(id string) bool {
-	if !strings.HasSuffix(id, ".conf") || !strings.HasPrefix(id, "/") {
-		return false
-	}
-	for _, dir := range managedConfDirs {
-		if strings.HasPrefix(id, dir) && !strings.ContainsAny(id, "\\\x00") && !strings.Contains(id, "..") {
-			return true
-		}
-	}
-	return false
-}
-
-var engineUnits = map[string][]string{"nginx": {"nginx"}, "apache": {"apache2", "httpd"}}
+var engineUnits = helper.EngineUnits
 
 type EngineInfo struct {
 	Engine    string `json:"engine"`
@@ -182,6 +125,13 @@ func (m *SiteManager) detectEnvironment(ctx context.Context) []EngineInfo {
 		env[2].Detail = ErrUnavailable.Error()
 	} else {
 		env[2].Detail = "daemon unreachable: " + helper.TrimOutput(firstLine(out))
+	}
+	// certbot gates Let's Encrypt issuance; without it the certificate panel
+	// reports 501 and the per-site action is hidden by the frontend.
+	if out, err := m.Run(ctx, "certbot", "--version"); err == nil {
+		env = append(env, EngineInfo{Engine: "certbot", Installed: true, Version: firstLine(out)})
+	} else {
+		env = append(env, EngineInfo{Engine: "certbot", Installed: false, Detail: ErrUnavailable.Error()})
 	}
 	return env
 }
@@ -408,7 +358,7 @@ func fileManaged(path string) bool {
 	if err != nil || len(data) > 512<<10 {
 		return false
 	}
-	return bytes.Contains(data, []byte(ManagedMarker))
+	return bytes.Contains(data, []byte(helper.ManagedMarker))
 }
 
 func (m *SiteManager) confDirSites(ctx context.Context, dirs []string, engine string, engineActive bool) []Site {
@@ -433,7 +383,7 @@ func (m *SiteManager) confDirSites(ctx context.Context, dirs []string, engine st
 				continue
 			}
 			conf := string(data)
-			managed := bytes.Contains(data, []byte(ManagedMarker))
+			managed := bytes.Contains(data, []byte(helper.ManagedMarker))
 			if engine == "nginx" {
 				for _, block := range parseNginxServers(conf) {
 					kind := "static"
@@ -542,89 +492,6 @@ func (m *SiteManager) Sites(w http.ResponseWriter, r *http.Request) {
 
 // ---- site creation ----
 
-func dirExists(path string) bool {
-	s, err := os.Stat(path)
-	return err == nil && s.IsDir()
-}
-
-// nativeConfPath picks the distribution-specific location: Debian/Ubuntu use
-// sites-available + a symlink in sites-enabled; RHEL-family and default
-// installs use a single file in conf.d.
-func nativeConfPath(engine, name string) (conf, enabled string) {
-	if engine == "nginx" {
-		if dirExists("/etc/nginx/sites-enabled") {
-			return "/etc/nginx/sites-available/" + name + ".conf", "/etc/nginx/sites-enabled/" + name + ".conf"
-		}
-		return "/etc/nginx/conf.d/" + name + ".conf", ""
-	}
-	if dirExists("/etc/apache2/sites-enabled") {
-		return "/etc/apache2/sites-available/" + name + ".conf", "/etc/apache2/sites-enabled/" + name + ".conf"
-	}
-	return "/etc/httpd/conf.d/" + name + ".conf", ""
-}
-
-func validDocumentRoot(root string) bool {
-	if len(root) < 2 || !strings.HasPrefix(root, "/") || strings.ContainsAny(root, "\\\x00") || root != path.Clean(root) {
-		return false
-	}
-	for _, part := range strings.Split(root, "/") {
-		if part == ".." {
-			return false
-		}
-	}
-	return true
-}
-
-const placeholderIndex = `<!doctype html>
-<html lang="zh-CN">
-<head><meta charset="utf-8"><title>站点已就绪</title></head>
-<body style="font-family:sans-serif;display:grid;place-items:center;min-height:100vh">
-  <div style="text-align:center">
-    <h1>站点已就绪</h1>
-    <p>此页面由 LightPanel 创建。请将网站文件上传到站点目录。</p>
-  </div>
-</body>
-</html>
-`
-
-func nginxConf(name, domain string, port int, root string) string {
-	if domain == "" {
-		domain = "_"
-	}
-	return ManagedMarker + " — site: " + name + `
-server {
-    listen ` + strconv.Itoa(port) + `;
-    server_name ` + domain + `;
-    root ` + root + `;
-    index index.html index.htm;
-
-    location / {
-        try_files $uri $uri/ =404;
-    }
-}
-`
-}
-
-func apacheConf(name, domain string, port int, root string) string {
-	if domain == "" {
-		domain = "_"
-	}
-	conf := ManagedMarker + " — site: " + name + "\n"
-	if port != 80 && port != 443 {
-		conf += "Listen " + strconv.Itoa(port) + "\n\n"
-	}
-	conf += `<VirtualHost *:` + strconv.Itoa(port) + `>
-    ServerName ` + domain + `
-    DocumentRoot ` + root + `
-
-    <Directory ` + root + `>
-        Require all granted
-    </Directory>
-</VirtualHost>
-`
-	return conf
-}
-
 // writeConfFile writes atomically: temp file in the same directory, fsync,
 // rename. An existing file is never overwritten.
 func writeConfFile(path, content string) error {
@@ -678,18 +545,48 @@ func (m *SiteManager) reloadEngine(ctx context.Context, engine string) (string, 
 	if unit == "" {
 		return "", fmt.Errorf("engine %s has no systemd unit", engine)
 	}
-	if out, routed, err := privileged(ctx, helper.Request{Op: helper.OpService, Unit: unit + ".service", Action: "reload"}); routed {
+	// Site reloads belong to the allow_sites grant; the helper resolves the
+	// engine's unit itself, so no per-unit service ACL entry is needed.
+	if out, routed, err := privileged(ctx, helper.Request{Op: helper.OpSite, Action: "reload", Engine: engine}); routed {
 		return out, err
 	}
 	return m.Run(ctx, "systemctl", "--no-ask-password", "reload", "--", unit+".service")
 }
 
-func (m *SiteManager) createNativeSite(ctx context.Context, engine, name, domain string, port int, root string) error {
-	if root == "" {
-		root = "/var/www/" + name
+// createNativeSite writes the site configuration either through the helper
+// (least-privilege mode: the helper re-validates and re-renders everything)
+// or directly with the panel's own privileges (root mode).
+func (m *SiteManager) createNativeSite(ctx context.Context, engine, kind, name, domain string, port int, root, proxyTarget string) error {
+	if kind == "" {
+		kind = "static"
 	}
-	if !validDocumentRoot(root) {
-		return fmt.Errorf("invalid site root path")
+	if kind != "static" && kind != "proxy" {
+		return fmt.Errorf("kind must be static or proxy")
+	}
+	if out, routed, err := privileged(ctx, helper.Request{
+		Op: helper.OpSite, Action: "create", Engine: engine, Site: name, Kind: kind,
+		Domain: domain, Port: strconv.Itoa(port), Root: root, ProxyTarget: proxyTarget,
+	}); routed {
+		if err != nil {
+			if strings.Contains(err.Error(), "already exists") {
+				return errConflict
+			}
+			return fmt.Errorf("%w\n%s", err, helper.TrimOutput(out))
+		}
+		return nil
+	}
+	if kind == "proxy" {
+		if !helper.ValidProxyTarget(proxyTarget) {
+			return fmt.Errorf("invalid proxy target")
+		}
+		root = ""
+	} else {
+		if root == "" {
+			root = "/var/www/" + name
+		}
+		if !validDocumentRoot(root) {
+			return fmt.Errorf("invalid site root path")
+		}
 	}
 	confPath, enabledPath := nativeConfPath(engine, name)
 	if _, err := os.Stat(confPath); err == nil {
@@ -702,22 +599,20 @@ func (m *SiteManager) createNativeSite(ctx context.Context, engine, name, domain
 	}
 	// Only seed content for the default docroot; custom roots are assumed
 	// prepared via the file manager.
-	if root == "/var/www/"+name {
+	if kind == "static" && root == "/var/www/"+name {
 		if err := os.MkdirAll(root, 0o755); err != nil {
 			return err
 		}
 		indexPath := filepath.Join(root, "index.html")
 		if _, err := os.Stat(indexPath); errors.Is(err, fs.ErrNotExist) {
-			if err := os.WriteFile(indexPath, []byte(placeholderIndex), 0o644); err != nil {
+			if err := os.WriteFile(indexPath, []byte(helper.PlaceholderIndex), 0o644); err != nil {
 				return err
 			}
 		}
 	}
-	var conf string
-	if engine == "nginx" {
-		conf = nginxConf(name, domain, port, root)
-	} else {
-		conf = apacheConf(name, domain, port, root)
+	conf, err := helper.SiteConf(engine, kind, name, domain, port, root, proxyTarget)
+	if err != nil {
+		return err
 	}
 	if err := writeConfFile(confPath, conf); err != nil {
 		return err
@@ -801,8 +696,22 @@ func (m *SiteManager) SiteCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	switch engine {
 	case "nginx", "apache":
+		kind := r.FormValue("mode")
+		if kind == "" {
+			kind = "static"
+		}
+		proxyTarget := strings.TrimSpace(r.FormValue("proxy_target"))
+		if kind == "proxy" {
+			if !helper.ValidProxyTarget(proxyTarget) {
+				http.Error(w, "proxy target must be http(s)://host[:port][/path]", 400)
+				return
+			}
+		} else if kind != "static" {
+			http.Error(w, "mode must be static or proxy", 400)
+			return
+		}
 		root := strings.TrimSpace(r.FormValue("root"))
-		if err := m.createNativeSite(ctx, engine, name, domain, port, root); err != nil {
+		if err := m.createNativeSite(ctx, engine, kind, name, domain, port, root, proxyTarget); err != nil {
 			if errors.Is(err, errConflict) {
 				http.Error(w, "a site with this name already exists", 409)
 				return
@@ -879,7 +788,7 @@ func (m *SiteManager) deleteNativeSite(id string) error {
 	if err != nil {
 		return err
 	}
-	if len(data) > 512<<10 || !bytes.Contains(data, []byte(ManagedMarker)) {
+	if len(data) > 512<<10 || !bytes.Contains(data, []byte(helper.ManagedMarker)) {
 		return fmt.Errorf("refusing to delete: configuration was not created by lightpanel")
 	}
 	if err := os.Remove(id); err != nil {
@@ -913,7 +822,26 @@ func (m *SiteManager) SiteAction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		JSON(w, map[string]string{"message": engine + " configuration reloaded"})
-	case "start", "stop", "delete":
+	case "delete":
+		if engine == "nginx" || engine == "apache" {
+			// In least-privilege mode the helper re-checks the managed path
+			// and marker; a root panel applies the same checks locally.
+			if out, routed, err := privileged(ctx, helper.Request{Op: helper.OpSite, Action: "delete", Path: id}); routed {
+				if err != nil {
+					commandError(w, out, err)
+					return
+				}
+			} else if err := m.deleteNativeSite(id); err != nil {
+				commandError(w, "", err)
+				return
+			}
+			if out, err := m.reloadEngine(ctx, engine); err != nil {
+				commandError(w, out, err)
+				return
+			}
+			JSON(w, map[string]string{"message": "site deleted and " + engine + " reloaded"})
+			return
+		}
 		names, err := m.dockerManagedNames(ctx)
 		if err != nil {
 			commandError(w, "", err)
@@ -923,27 +851,102 @@ func (m *SiteManager) SiteAction(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "refusing to act on a container that was not created by lightpanel", 403)
 			return
 		}
-		switch op {
-		case "start":
+		if out, err := m.RunTimeout(ctx, 60*time.Second, "docker", "rm", "-f", id); err != nil {
+			commandError(w, out, err)
+			return
+		}
+		JSON(w, map[string]string{"message": "container removed"})
+	case "start", "stop":
+		names, err := m.dockerManagedNames(ctx)
+		if err != nil {
+			commandError(w, "", err)
+			return
+		}
+		if !names[id] {
+			http.Error(w, "refusing to act on a container that was not created by lightpanel", 403)
+			return
+		}
+		if op == "start" {
 			if out, err := m.Run(ctx, "docker", "start", id); err != nil {
 				commandError(w, out, err)
 				return
 			}
 			JSON(w, map[string]string{"message": "container started"})
-		case "stop":
-			if out, err := m.RunTimeout(ctx, 40*time.Second, "docker", "stop", id); err != nil {
-				commandError(w, out, err)
-				return
-			}
-			JSON(w, map[string]string{"message": "container stopped"})
-		case "delete":
-			if out, err := m.RunTimeout(ctx, 60*time.Second, "docker", "rm", "-f", id); err != nil {
-				commandError(w, out, err)
-				return
-			}
-			JSON(w, map[string]string{"message": "container removed"})
+			return
 		}
+		if out, err := m.RunTimeout(ctx, 40*time.Second, "docker", "stop", id); err != nil {
+			commandError(w, out, err)
+			return
+		}
+		JSON(w, map[string]string{"message": "container stopped"})
 	default:
 		http.Error(w, "op must be start, stop, delete or reload", 400)
 	}
+}
+
+// ---- HTTPS certificates (Let's Encrypt via certbot) ----
+
+// Certificates reports certbot availability and the local certificate list.
+// certbot output is shown verbatim (failures included) so the admin can see
+// why a listing is empty or stale.
+func (m *SiteManager) Certificates(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	out, routed, err := privileged(ctx, helper.Request{Op: helper.OpSite, Action: "cert-status"})
+	if !routed {
+		out, err = m.Run(ctx, "certbot", "certificates")
+	}
+	installed := !errors.Is(err, ErrUnavailable)
+	if !installed {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(501)
+		_ = json.NewEncoder(w).Encode(struct {
+			Installed bool   `json:"installed"`
+			Output    string `json:"output"`
+			Error     string `json:"error,omitempty"`
+		}{false, out, helper.TrimOutput(err.Error())})
+		return
+	}
+	errText := ""
+	if err != nil {
+		errText = helper.TrimOutput(err.Error())
+	}
+	JSON(w, struct {
+		Installed bool   `json:"installed"`
+		Output    string `json:"output"`
+		Error     string `json:"error,omitempty"`
+	}{installed, out, errText})
+}
+
+// IssueCert requests a Let's Encrypt certificate for one domain with certbot.
+// The engine installer plugin rewrites the site's server block for HTTPS.
+func (m *SiteManager) IssueCert(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	domain := strings.TrimSpace(r.FormValue("domain"))
+	email := strings.TrimSpace(r.FormValue("email"))
+	engine := r.FormValue("engine")
+	if !validServerName(domain) || domain == "_" || strings.HasPrefix(domain, "*.") {
+		http.Error(w, "certificate issuance needs one concrete domain (wildcards require DNS-01)", 400)
+		return
+	}
+	if !helper.ValidEmail(email) {
+		http.Error(w, "a valid registration email is required", 400)
+		return
+	}
+	if engine != "nginx" && engine != "apache" {
+		http.Error(w, "engine must be nginx or apache", 400)
+		return
+	}
+	// The panel forwards with a long deadline so the ACME round-trip survives.
+	cctx, cancel := context.WithTimeout(ctx, 300*time.Second)
+	defer cancel()
+	args := []string{"-n", "--agree-tos", "-m", email, "-d", domain, "--" + engine}
+	out, routed, err := privileged(cctx, helper.Request{Op: helper.OpSite, Action: "issue-cert", Domain: domain, Email: email, Engine: engine})
+	if !routed {
+		out, err = m.RunTimeout(cctx, 280*time.Second, "certbot", args...)
+	}
+	if err != nil {
+		commandError(w, out, err)
+		return
+	}
+	JSON(w, map[string]string{"message": "certificate issued for " + domain, "output": helper.TrimOutput(out)})
 }

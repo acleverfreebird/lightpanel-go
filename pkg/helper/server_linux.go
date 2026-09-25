@@ -35,6 +35,10 @@ type ServerConfig struct {
 	AllowFirewall bool
 	AllowKill     bool
 	AllowUpdate   bool
+	// AllowSites gates the managed web-site operations (configuration write,
+	// managed delete, engine reload, certbot). These are name-parameterized,
+	// so unlike services they are a single opt-in grant.
+	AllowSites bool
 	// PanelUnit is the systemd unit restarted after a successful self-update.
 	PanelUnit string
 }
@@ -176,7 +180,7 @@ func Run(ctx context.Context, cfg ServerConfig, log *slog.Logger) error {
 		_ = l.Close()
 	}()
 	log.Info("helper_listening", "socket", cfg.Socket, "allowed_users", cfg.AllowedUsers,
-		"services", len(cfg.Services), "firewall", cfg.AllowFirewall, "kill", cfg.AllowKill, "update", cfg.AllowUpdate)
+		"services", len(cfg.Services), "firewall", cfg.AllowFirewall, "kill", cfg.AllowKill, "update", cfg.AllowUpdate, "sites", cfg.AllowSites)
 	slots := make(chan struct{}, 16)
 	for {
 		conn, err := l.Accept()
@@ -218,10 +222,15 @@ func (s *server) handle(conn net.Conn) {
 	if err := json.NewDecoder(bufio.NewReader(io.LimitReader(conn, requestLimit))).Decode(&req); err != nil {
 		return
 	}
+	// Certificate issuance waits on the ACME network round-trip; extend the
+	// connection budget for it. Everything else keeps the 60s bound.
+	if req.Op == OpSite && (req.Action == "issue-cert" || req.Action == "cert-status") {
+		_ = conn.SetDeadline(time.Now().Add(5 * time.Minute))
+	}
 	resp := s.dispatch(uid, &req)
 	_ = json.NewEncoder(conn).Encode(resp)
 	s.log.Info("helper_op", "op", req.Op, "uid", uid, "unit", req.Unit, "action", req.Action,
-		"engine", req.Engine, "pid", req.PID, "ok", resp.OK)
+		"engine", req.Engine, "pid", req.PID, "site", req.Site, "path", req.Path, "ok", resp.OK)
 }
 
 // dispatch validates the operation against the configured ACLs before doing
@@ -270,6 +279,8 @@ func (s *server) dispatch(uid int, req *Request) Response {
 			return Response{Error: "self-update requires allow_update = true in [helper]"}
 		}
 		return s.installUpdate(uid, req)
+	case OpSite:
+		return s.site(req)
 	default:
 		return Response{Error: "unknown operation"}
 	}

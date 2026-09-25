@@ -67,6 +67,8 @@ func newHandler(cfg *config.Config, files *sysinfo.Files, manager *sysinfo.Manag
 	register("GET /api/sites", sites.Sites)
 	register("POST /api/sites/create", sites.SiteCreate)
 	register("POST /api/sites/action", sites.SiteAction)
+	register("GET /api/sites/certs", sites.Certificates)
+	register("POST /api/sites/cert", sites.IssueCert)
 	return security(cfg, files.UploadLimit(), mux), nil
 }
 

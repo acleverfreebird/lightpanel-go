@@ -33,7 +33,7 @@ type Config struct {
 
 	// Helper 为空表示不使用最小特权 helper：面板保持旧有行为（root 下直接执行
 	// 特权操作）。配置了 [helper] 且面板以非 root 用户运行时，systemd 服务控制、
-	// 防火墙、进程信号与自更新会转发给独立的 helper 进程并按白名单授权。
+	// 防火墙、进程信号、自更新与托管站点操作会转发给独立的 helper 进程并按白名单授权。
 	Helper *HelperConfig `toml:"helper"`
 }
 
@@ -53,6 +53,9 @@ type HelperConfig struct {
 	AllowKill bool `toml:"allow_kill"`
 	// AllowUpdate 允许安装经 SHA256 校验的在线更新并重启面板服务。
 	AllowUpdate bool `toml:"allow_update"`
+	// AllowSites 允许托管站点操作：写入站点配置（helper 端从校验后的参数
+	// 重新生成内容）、删除带托管标记的配置、重载引擎与 certbot 证书签发。
+	AllowSites bool `toml:"allow_sites"`
 	// StagingDir 是非 root 面板下载更新资产的目录（属主必须是面板用户，权限
 	// 不得对组/其他用户可写；helper 安装前会复核）。
 	StagingDir string `toml:"staging_dir"`

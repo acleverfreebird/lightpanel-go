@@ -13,7 +13,11 @@ test('site management page is wired into navigation, routes and template', () =>
   assert.match(template, /<section id="sites" hidden/, 'template must contain the sites section');
   assert.match(template, /id="site-list"/, 'sites section must contain the site table');
   assert.match(template, /id="site-form"/, 'sites section must contain the create form');
+  assert.match(template, /id="cert-panel"/, 'sites section must contain the certificate panel');
   assert.match(sites, /\/api\/sites'/, 'sites.js must call the sites API');
+  assert.match(sites, /\/api\/sites\/certs'/, 'sites.js must call the certificate listing API');
+  assert.match(sites, /\/api\/sites\/cert'/, 'sites.js must call the certificate issuance API');
+  assert.match(sites, /name=mode/, 'create form must expose the static/proxy mode');
 });
 
 test('client-side site name pattern matches the server validation', () => {

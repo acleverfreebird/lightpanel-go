@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"lightpanel/pkg/helper"
 )
 
 func TestParseNginxServers(t *testing.T) {
@@ -332,17 +334,170 @@ func TestSiteCreateValidation(t *testing.T) {
 }
 
 func TestSiteTemplates(t *testing.T) {
-	nginx := nginxConf("blog", "blog.example.com", 8080, "/var/www/blog")
-	if !strings.HasPrefix(nginx, ManagedMarker) || !strings.Contains(nginx, "listen 8080;") ||
+	nginx, err := helper.SiteConf("nginx", "static", "blog", "blog.example.com", 8080, "/var/www/blog", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(nginx, helper.ManagedMarker) || !strings.Contains(nginx, "listen 8080;") ||
 		!strings.Contains(nginx, "server_name blog.example.com;") || !strings.Contains(nginx, "root /var/www/blog;") {
 		t.Fatalf("nginx template wrong:\n%s", nginx)
 	}
-	apache := apacheConf("blog", "", 8080, "/var/www/blog")
+	apache, err := helper.SiteConf("apache", "static", "blog", "", 8080, "/var/www/blog", "")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !strings.Contains(apache, "ServerName _") || !strings.Contains(apache, "Listen 8080") {
 		t.Fatalf("apache template wrong:\n%s", apache)
 	}
-	apache80 := apacheConf("blog", "a.example.com", 80, "/var/www/blog")
+	apache80, _ := helper.SiteConf("apache", "static", "blog", "a.example.com", 80, "/var/www/blog", "")
 	if strings.Contains(apache80, "Listen ") {
 		t.Fatalf("port 80 must not emit a Listen directive:\n%s", apache80)
+	}
+}
+
+func TestProxySiteTemplates(t *testing.T) {
+	nginx, err := helper.SiteConf("nginx", "proxy", "app", "app.example.com", 80, "", "http://127.0.0.1:3000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(nginx, "proxy_pass http://127.0.0.1:3000;") ||
+		!strings.Contains(nginx, "proxy_set_header Host $host;") || strings.Contains(nginx, "root ") {
+		t.Fatalf("nginx proxy template wrong:\n%s", nginx)
+	}
+	apache, err := helper.SiteConf("apache", "proxy", "app", "app.example.com", 80, "", "http://127.0.0.1:3000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(apache, "ProxyPass / http://127.0.0.1:3000") || !strings.Contains(apache, "ProxyPassReverse /") {
+		t.Fatalf("apache proxy template wrong:\n%s", apache)
+	}
+	for _, bad := range []struct{ target string }{{"ftp://x"}, {"http://x/y?z=1"}, {"http://"}, {"http://x:99999"}, {"javascript:alert(1)"}} {
+		if _, err := helper.SiteConf("nginx", "proxy", "app", "app.example.com", 80, "", bad.target); err == nil {
+			t.Errorf("proxy target %q accepted", bad.target)
+		}
+	}
+	if _, err := helper.SiteConf("nginx", "proxy", "app", "app.example.com", 80, "/var/www/app", ""); err == nil {
+		t.Error("proxy site without target accepted")
+	}
+	if _, err := helper.SiteConf("nginx", "static", "app", "app.example.com", 80, "", ""); err == nil {
+		t.Error("static site without root accepted")
+	}
+}
+
+func TestCreateNativeSiteRoutesThroughHelper(t *testing.T) {
+	previous := PrivilegedCall
+	t.Cleanup(func() { PrivilegedCall = previous })
+	var got helper.Request
+	PrivilegedCall = func(_ context.Context, req helper.Request) (string, error) {
+		got = req
+		return "", nil
+	}
+	m := &SiteManager{Run: func(context.Context, string, ...string) (string, error) { return "", nil },
+		RunTimeout: func(context.Context, time.Duration, string, ...string) (string, error) { return "", nil }}
+	if err := m.createNativeSite(context.Background(), "nginx", "proxy", "app", "app.example.com", 8080, "", "http://127.0.0.1:3000"); err != nil {
+		t.Fatalf("helper-routed create failed: %v", err)
+	}
+	if got.Op != helper.OpSite || got.Action != "create" || got.Kind != "proxy" || got.Site != "app" ||
+		got.Port != "8080" || got.ProxyTarget != "http://127.0.0.1:3000" {
+		t.Fatalf("wrong helper request: %+v", got)
+	}
+	// helper-side conflict surfaces as errConflict so the API answers 409
+	PrivilegedCall = func(_ context.Context, _ helper.Request) (string, error) {
+		return "", errors.New("helper operation failed: a site with this name already exists")
+	}
+	if err := m.createNativeSite(context.Background(), "nginx", "static", "blog", "", 80, "", ""); !errors.Is(err, errConflict) {
+		t.Fatalf("conflict not mapped: %v", err)
+	}
+}
+
+func TestSiteActionDeleteNativeRoutesThroughHelper(t *testing.T) {
+	previous := PrivilegedCall
+	t.Cleanup(func() { PrivilegedCall = previous })
+	var got helper.Request
+	PrivilegedCall = func(_ context.Context, req helper.Request) (string, error) {
+		if req.Action != "delete" && req.Action != "reload" {
+			return "", errors.New("unexpected action " + req.Action)
+		}
+		if req.Action == "delete" {
+			got = req
+		}
+		return "", nil
+	}
+	m := &SiteManager{Run: func(_ context.Context, _ string, args ...string) (string, error) {
+		// reloadEngine resolves the unit after deletion
+		if args[0] == "list-unit-files" {
+			return "nginx.service enabled\n", nil
+		}
+		return "", nil
+	}, RunTimeout: func(context.Context, time.Duration, string, ...string) (string, error) { return "", nil }}
+	r := httptest.NewRequest("POST", "/api/sites/action", strings.NewReader(url.Values{"id": {"/etc/nginx/conf.d/blog.conf"}, "op": {"delete"}, "engine": {"nginx"}}.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	m.SiteAction(w, r)
+	if w.Code != 200 {
+		t.Fatalf("delete failed: %d %s", w.Code, w.Body.String())
+	}
+	if got.Op != helper.OpSite || got.Path != "/etc/nginx/conf.d/blog.conf" {
+		t.Fatalf("wrong helper delete request: %+v", got)
+	}
+}
+
+func TestIssueCert(t *testing.T) {
+	previous := PrivilegedCall
+	t.Cleanup(func() { PrivilegedCall = previous })
+	var got helper.Request
+	PrivilegedCall = func(_ context.Context, req helper.Request) (string, error) {
+		got = req
+		return "Successfully received certificate.\n", nil
+	}
+	m := &SiteManager{Run: func(context.Context, string, ...string) (string, error) { return "", nil },
+		RunTimeout: func(context.Context, time.Duration, string, ...string) (string, error) { return "", nil }}
+	post := func(form url.Values) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("POST", "/api/sites/cert", strings.NewReader(form.Encode()))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		w := httptest.NewRecorder()
+		m.IssueCert(w, r)
+		return w
+	}
+	if w := post(url.Values{"domain": {"*.example.com"}, "email": {"a@b.co"}, "engine": {"nginx"}}); w.Code != 400 {
+		t.Fatalf("wildcard accepted: %d", w.Code)
+	}
+	if w := post(url.Values{"domain": {"blog.example.com"}, "email": {"not-an-email"}, "engine": {"nginx"}}); w.Code != 400 {
+		t.Fatalf("bad email accepted: %d", w.Code)
+	}
+	if w := post(url.Values{"domain": {"blog.example.com"}, "email": {"a@b.co"}, "engine": {"docker"}}); w.Code != 400 {
+		t.Fatalf("docker engine accepted: %d", w.Code)
+	}
+	if w := post(url.Values{"domain": {"blog.example.com"}, "email": {"a@b.co"}, "engine": {"nginx"}}); w.Code != 200 {
+		t.Fatalf("valid issuance failed: %d %s", w.Code, w.Body.String())
+	}
+	if got.Op != helper.OpSite || got.Action != "issue-cert" || got.Domain != "blog.example.com" || got.Email != "a@b.co" || got.Engine != "nginx" {
+		t.Fatalf("wrong helper cert request: %+v", got)
+	}
+}
+
+func TestCertificatesEndpoint(t *testing.T) {
+	previous := PrivilegedCall
+	t.Cleanup(func() { PrivilegedCall = previous })
+	PrivilegedCall = nil
+	m := &SiteManager{Run: func(_ context.Context, command string, args ...string) (string, error) {
+		if command == "certbot" {
+			return "Saving debug log to /var/log/letsencrypt\nCertificate Name: blog\n", nil
+		}
+		return "", nil
+	}, RunTimeout: func(context.Context, time.Duration, string, ...string) (string, error) { return "", nil }}
+	w := httptest.NewRecorder()
+	m.Certificates(w, httptest.NewRequest("GET", "/api/sites/certs", nil))
+	if w.Code != 200 || !strings.Contains(w.Body.String(), "Certificate Name: blog") {
+		t.Fatalf("cert listing failed: %d %s", w.Code, w.Body.String())
+	}
+	// certbot missing entirely → 501 with installed=false
+	m.Run = func(_ context.Context, _ string, _ ...string) (string, error) {
+		return "", ErrUnavailable
+	}
+	w = httptest.NewRecorder()
+	m.Certificates(w, httptest.NewRequest("GET", "/api/sites/certs", nil))
+	if w.Code != 501 || !strings.Contains(w.Body.String(), "\"installed\":false") {
+		t.Fatalf("missing certbot must be 501: %d %s", w.Code, w.Body.String())
 	}
 }
