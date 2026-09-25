@@ -6,8 +6,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -54,6 +52,9 @@ type ServerConfig struct {
 const (
 	execTimeout  = 15 * time.Second
 	updateExeMax = 64 << 20
+	// helperUnit 是 helper 自身的 systemd 单元（scripts/install.sh 注册的
+	// 固定名称），自更新安装完成后随之重启以加载新二进制。
+	helperUnit = "lightpanel-helper"
 )
 
 // Drain command output without allowing a privileged command to exhaust memory.
@@ -187,7 +188,7 @@ func Run(ctx context.Context, cfg ServerConfig, log *slog.Logger) error {
 		<-ctx.Done()
 		_ = l.Close()
 	}()
-	log.Info("helper_listening", "socket", cfg.Socket, "allowed_users", cfg.AllowedUsers,
+	log.Info("helper_listening", "socket", cfg.Socket, "protocol", ProtocolVersion, "allowed_users", cfg.AllowedUsers,
 		"services", len(cfg.Services), "firewall", cfg.AllowFirewall, "kill", cfg.AllowKill, "update", cfg.AllowUpdate, "sites", cfg.AllowSites, "apps", cfg.AllowApps, "databases", cfg.AllowDatabases)
 	slots := make(chan struct{}, 16)
 	for {
@@ -240,6 +241,7 @@ func (s *server) handle(conn net.Conn) {
 		_ = conn.SetDeadline(time.Now().Add(appInstallDeadline))
 	}
 	resp := s.dispatch(uid, &req)
+	resp.Version = ProtocolVersion
 	_ = json.NewEncoder(conn).Encode(resp)
 	s.log.Info("helper_op", "op", req.Op, "uid", uid, "unit", req.Unit, "action", req.Action,
 		"engine", req.Engine, "pid", req.PID, "site", req.Site, "path", req.Path, "ok", resp.OK)
@@ -249,6 +251,9 @@ func (s *server) handle(conn net.Conn) {
 // anything privileged. Every branch fails closed.
 func (s *server) dispatch(uid int, req *Request) Response {
 	switch req.Op {
+	case OpHello:
+		// Unauthenticated protocol probe: constant, read-only, no ACL.
+		return Response{OK: true, Version: ProtocolVersion}
 	case OpService:
 		if !CheckServiceACL(s.cfg.Services, req.Unit, req.Action) {
 			return Response{Error: fmt.Sprintf("unit %q with action %q is not granted in helper.services; add it to the panel config", req.Unit, req.Action)}
@@ -397,7 +402,7 @@ func (s *server) installUpdate(uid int, req *Request) Response {
 			return Response{Error: "staged file " + filepath.Base(p) + " must be owned by the panel user"}
 		}
 	}
-	if err := verifyChecksum(manifestPath, asset, assetPath); err != nil {
+	if err := VerifyChecksum(manifestPath, asset, assetPath); err != nil {
 		return Response{Error: "checksum verification failed: " + err.Error()}
 	}
 	exe, err := os.Executable()
@@ -409,46 +414,25 @@ func (s *server) installUpdate(uid int, req *Request) Response {
 	}
 	if unit := s.cfg.PanelUnit; unit != "" {
 		// Restart with a short delay so the panel can flush its response
-		// before systemd stops it. The helper is a separate unit and stays up.
+		// before systemd stops it. The helper is a separate unit and stays up
+		// until the panel restart job has been accepted, then recycles itself
+		// as well: both processes share this binary, and a helper left on the
+		// old image fails every operation the new version added with a bare
+		// "unknown operation". The helper restart uses --no-block because
+		// systemd stops the unit's cgroup — including the requesting systemctl
+		// client — the moment the job is enqueued.
 		time.AfterFunc(1500*time.Millisecond, func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
 			if _, err := run(ctx, "systemctl", "restart", unit); err != nil {
 				s.log.Error("helper_update_restart", "unit", unit, "error", err.Error())
 			}
+			if _, err := run(ctx, "systemctl", "--no-block", "restart", helperUnit); err != nil {
+				s.log.Error("helper_update_restart", "unit", helperUnit, "error", err.Error())
+			}
 		})
 	}
 	return Response{OK: true}
-}
-
-func verifyChecksum(manifest, asset, target string) error {
-	data, err := os.ReadFile(manifest)
-	if err != nil {
-		return err
-	}
-	var expected string
-	for _, line := range strings.Split(string(data), "\n") {
-		fields := strings.Fields(strings.TrimSpace(line))
-		if len(fields) == 2 && fields[1] == asset {
-			expected = strings.ToLower(fields[0])
-		}
-	}
-	if len(expected) != 64 {
-		return errors.New("manifest has no entry for " + asset)
-	}
-	f, err := os.Open(target)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	sum := sha256.New()
-	if _, err = io.Copy(sum, f); err != nil {
-		return err
-	}
-	if got := hex.EncodeToString(sum.Sum(nil)); got != expected {
-		return fmt.Errorf("checksum mismatch: expected %s, got %s", expected, got)
-	}
-	return nil
 }
 
 // installFile copies src over dst atomically: same-directory temporary file,

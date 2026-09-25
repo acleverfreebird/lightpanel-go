@@ -59,6 +59,7 @@ func runHelper(args []string) error {
 	if cfg.Helper == nil {
 		return fmt.Errorf("helper mode requires a [helper] config section")
 	}
+	migrateConfig(*configPath)
 	if os.Geteuid() != 0 {
 		return fmt.Errorf("the helper must run as root to perform privileged operations")
 	}
@@ -77,6 +78,45 @@ func runHelper(args []string) error {
 		PanelUnit:      "lightpanel",
 	}, slog.Default())
 }
+
+// probeHelperVersion handshakes with the helper shortly after startup. The
+// panel and helper share one binary but restart as separate units, so an
+// upgrade leaves the old helper image running; surface that here, where the
+// operator sees it, instead of as per-operation "unknown operation" errors.
+func probeHelperVersion(client *helper.Client) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	v, err := client.Hello(ctx)
+	if err != nil {
+		slog.Warn("helper_version_probe_failed", "error", err.Error())
+		return
+	}
+	if v != helper.ProtocolVersion {
+		slog.Warn("helper_version_mismatch",
+			"helper_protocol", v, "panel_protocol", helper.ProtocolVersion,
+			"impact", "newer operations (apps, databases, sites) fail until the helper is restarted",
+			"fix", "systemctl restart lightpanel-helper")
+	}
+}
+
+// migrateConfig 在启动时把新版本模板中缺失的配置条目补全进既有 config.toml
+// （升级迁移；详见 config.EnsureCurrent）。失败只告警不阻断启动——迁移是
+// 便利措施，不是运行前提。
+func migrateConfig(path string) {
+	if path == "" {
+		return
+	}
+	added, changed, err := config.EnsureCurrent(path)
+	if err != nil {
+		slog.Warn("config_migrate_failed", "path", path, "error", err.Error())
+		return
+	}
+	if changed {
+		slog.Info("config_migrated", "path", path, "added", added,
+			"backup", path+".bak")
+	}
+}
+
 func run() error {
 	configPath := flag.String("c", "", "TOML config (empty: environment/defaults)")
 	hashPassword := flag.Bool("hash-password", false, "read password from terminal and print bcrypt hash")
@@ -91,6 +131,7 @@ func run() error {
 	sysinfo.BuildVersion = version
 	sysinfo.UpdateRepo = cfg.UpdateRepo
 	sysinfo.UpdateMirror = cfg.UpdateMirror
+	migrateConfig(*configPath)
 	logOutput := os.Stdout
 	if cfg.LogFile != "" {
 		logOutput, err = os.OpenFile(cfg.LogFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
@@ -120,6 +161,7 @@ func run() error {
 		sysinfo.PrivilegedCall = client.Call
 		sysinfo.UpdateStagingDir = cfg.Helper.StagingDir
 		slog.Info("helper_mode_enabled", "socket", cfg.Helper.Socket)
+		go probeHelperVersion(client)
 	} else if cfg.Helper == nil && os.Geteuid() != 0 {
 		slog.Warn("unprivileged_without_helper", "impact", "service control, firewall, process signaling and self-update require a [helper] section and the lightpanel-helper service")
 	}

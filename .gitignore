@@ -3,3 +3,6 @@
 *.test
 *.log
 config.local.toml
+
+# ZCode 本地工作区
+.zcode/

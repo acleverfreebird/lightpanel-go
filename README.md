@@ -43,7 +43,7 @@ pkg/**/*_test.go             安全边界与解析测试
 server_test.go              路由、登录、权限、文件流程、审计测试
 static/app.js, app.css       无第三方框架的响应式管理界面
 templates/*.html            登录页与管理页模板
-config.toml                 无预置密码的配置样例
+config/example.toml        无预置密码的配置样例与升级迁移模板
 lightpanel.service          systemd 单元（非特权面板）
 lightpanel-helper.service   systemd 单元（root helper）
 Makefile                    Linux amd64/arm64 构建与测试
@@ -177,7 +177,7 @@ sudo bash install-lightpanel.sh
 要点：
 
 - 因为需要交互输入管理员密码（12–72 字节，不回显、不落盘明文），请使用上面两步式命令，而不是 `curl … | sudo bash` 管道形式。
-- 重复执行同一命令即为升级：替换二进制并重启服务，保留现有 `config.toml` 与密码。
+- 重复执行同一命令即为升级：替换二进制并重启服务（面板与 helper 一并重启），保留现有 `config.toml` 与密码。新版本新增的配置项会在服务启动时自动补全进 `config.toml`：已有键的值与注释原样保留，缺失条目连同注释追加（原配置备份为 `config.toml.bak`）；特权授权类开关（`allow_*`）以注释形式补全，是否启用由管理员显式决定。面板内的「在线更新」同样如此。
 - 非交互环境（自动化脚本）预置哈希：`curl -fsSL …/install.sh | sudo LP_PASS_HASH='<bcrypt 哈希>' bash -`；哈希先用 `lightpanel -hash-password` 在有终端的机器上生成。
 - 反向代理/域名访问：`sudo bash install-lightpanel.sh --origin https://panel.example.com`（仍监听 `127.0.0.1`，TLS 由反代终止）。
 - 其他选项：`--port 8888`、`--admin NAME`、`--read-only`、`--release latest`（改用 GitHub Release 预编译二进制，含 sha256 校验）、`--ref TAG`、`--force-config`（重写配置）、`--no-start`、`--legacy-root`（旧版 root 面板模式，不创建专用用户/不启用 helper）；完整列表见 `sudo bash install-lightpanel.sh --help`。
@@ -226,7 +226,7 @@ go vet ./...
 ```bash
 sudo install -d -m 0750 /opt/lightpanel /var/lib/lightpanel/files
 sudo install -m 0755 dist/lightpanel-linux-amd64 /opt/lightpanel/lightpanel
-sudo install -m 0600 config.toml /opt/lightpanel/config.toml
+sudo install -m 0600 config/example.toml /opt/lightpanel/config.toml
 /opt/lightpanel/lightpanel -hash-password
 # 将输出的 bcrypt 哈希填入 /opt/lightpanel/config.toml 的 password_hash。
 # 密码不会显示，也不会提供任何预置账号密码组合。
@@ -303,6 +303,8 @@ allow_databases = true  # 数据库管理：列表/建库/删库/用户管理（
 [helper.services]
 "nginx.service" = ["start", "stop", "restart"]
 ```
+
+以上开关默认关闭（缺省即拒绝）。升级后新增的开关会以注释形式自动补全进 `config.toml`，按需取消注释并重启 `lightpanel-helper` 即可生效。
 
 行为细节：
 

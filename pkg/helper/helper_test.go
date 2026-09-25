@@ -193,3 +193,77 @@ func TestClientAcceptsOKResponse(t *testing.T) {
 		t.Errorf("Call() = %q, %v", out, err)
 	}
 }
+
+func TestClientHelloReturnsProtocolVersion(t *testing.T) {
+	sock := t.TempDir() + "/s.sock"
+	l, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Skipf("unix sockets unavailable: %v", err)
+	}
+	defer l.Close()
+	go func() {
+		conn, err := l.Accept()
+		if err != nil {
+			return
+		}
+		var req Request
+		_ = json.NewDecoder(conn).Decode(&req)
+		_ = json.NewEncoder(conn).Encode(Response{OK: true, Version: ProtocolVersion})
+		conn.Close()
+	}()
+	v, err := (&Client{Socket: sock}).Hello(context.Background())
+	if err != nil || v != ProtocolVersion {
+		t.Errorf("Hello() = %d, %v", v, err)
+	}
+}
+
+func TestClientFlagsStaleHelperOnError(t *testing.T) {
+	sock := t.TempDir() + "/s.sock"
+	l, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Skipf("unix sockets unavailable: %v", err)
+	}
+	defer l.Close()
+	go func() {
+		conn, err := l.Accept()
+		if err != nil {
+			return
+		}
+		var req Request
+		_ = json.NewDecoder(conn).Decode(&req)
+		// What an upgraded panel hears from a pre-handshake helper: no
+		// version field, and a bare rejection for an operation it predates.
+		_ = json.NewEncoder(conn).Encode(Response{Error: "unknown operation"})
+		conn.Close()
+	}()
+	_, err = (&Client{Socket: sock}).Call(context.Background(), Request{Op: OpApp, Action: "install", App: "nginx"})
+	if err == nil || !strings.Contains(err.Error(), "unknown operation") {
+		t.Fatalf("expected the helper error to surface, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "systemctl restart lightpanel-helper") {
+		t.Errorf("stale helper not flagged: %v", err)
+	}
+}
+
+func TestClientNoHintOnMatchingVersion(t *testing.T) {
+	sock := t.TempDir() + "/s.sock"
+	l, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Skipf("unix sockets unavailable: %v", err)
+	}
+	defer l.Close()
+	go func() {
+		conn, err := l.Accept()
+		if err != nil {
+			return
+		}
+		var req Request
+		_ = json.NewDecoder(conn).Decode(&req)
+		_ = json.NewEncoder(conn).Encode(Response{Error: "denied by acl", Version: ProtocolVersion})
+		conn.Close()
+	}()
+	_, err = (&Client{Socket: sock}).Call(context.Background(), Request{Op: OpService, Unit: "a.service", Action: "start"})
+	if err == nil || strings.Contains(err.Error(), "systemctl restart") {
+		t.Errorf("matching version should not carry the restart hint: %v", err)
+	}
+}

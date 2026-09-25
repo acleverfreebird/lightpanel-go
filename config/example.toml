@@ -1,3 +1,6 @@
+# LightPanel 配置样例，同时是升级迁移的模板：新版本启动时会把既有配置中
+# 缺失的条目（连同注释）自动补全进 config.toml，已有键的值与注释一律保留。
+# 特权授权项（allow_*）以注释形式补全，是否开启由管理员显式决定。
 host = "127.0.0.1"
 port = 8888
 admin_user = "admin"
@@ -19,21 +22,21 @@ log_file = ""
 # 由其按下列白名单授权执行。面板以 root 运行时本段被忽略。详见 README。
 [helper]
 allowed_users = ["lightpanel"]
-allow_firewall = true
-allow_kill = true
-allow_update = true
+# allow_firewall = true
+# allow_kill = true
+# allow_update = true
 # allow_sites = true 时 helper 授权托管站点操作：写入站点配置（内容在
 # helper 端从校验后的参数重新生成）、删除带托管标记的配置、重载引擎与
 # certbot 证书签发。最小特权模式下创建站点需要打开它。
-allow_sites = true
+# allow_sites = true
 # allow_apps = true 时 helper 授权应用商店安装：通过系统软件包管理器安装
 # 固定目录中的应用（nginx/apache/docker/certbot/mysql/mariadb/postgresql/redis）；
 # 应用名经白名单校验，全部安装参数在 helper 端重建。最小特权模式下应用商店
 # 安装需要打开它。
-allow_apps = true
+# allow_apps = true
 # allow_databases = true 时 helper 授权数据库管理操作：列出/创建/删除数据库
 # 与用户管理；引擎、名称与全部参数在 helper 端重建，密码仅经 stdin 传递。
-allow_databases = true
+# allow_databases = true
 # socket = "/run/lightpanel/helper.sock"
 # staging_dir = "/var/lib/lightpanel/update"
 
@@ -42,8 +45,8 @@ allow_databases = true
 [helper.services]
 "nginx.service" = ["start", "stop", "restart"]
 # 数据库管理页的启停/重启按钮走服务控制；最小特权模式下按需加入数据库单元：
-# "mysql.service" = ["start", "stop", "restart"]
-# "mariadb.service" = ["start", "stop", "restart"]
-# "mysqld.service" = ["start", "stop", "restart"]
-# "postgresql.service" = ["start", "stop", "restart"]
-# "redis-server.service" = ["start", "stop", "restart"]
+#   "mysql.service" = ["start", "stop", "restart"]
+#   "mariadb.service" = ["start", "stop", "restart"]
+#   "mysqld.service" = ["start", "stop", "restart"]
+#   "postgresql.service" = ["start", "stop", "restart"]
+#   "redis-server.service" = ["start", "stop", "restart"]

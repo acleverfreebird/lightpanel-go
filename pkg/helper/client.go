@@ -26,13 +26,58 @@ const (
 // Call performs one request on a fresh connection. A nil receiver fails
 // closed so callers can keep a single code path.
 func (c *Client) Call(ctx context.Context, req Request) (string, error) {
+	resp, err := c.send(ctx, req)
+	if err != nil {
+		return "", err
+	}
+	if !resp.OK {
+		msg := resp.Error
+		if msg == "" {
+			msg = "rejected"
+		}
+		if resp.Output != "" {
+			msg += "\n" + TrimOutput(resp.Output)
+		}
+		if hint := versionMismatchHint(resp); hint != "" {
+			msg += "\n" + hint
+		}
+		return resp.Output, fmt.Errorf("%w: %s", ErrHelper, msg)
+	}
+	return resp.Output, nil
+}
+
+// Hello performs the protocol handshake and returns the helper's protocol
+// version. An old helper answers "unknown operation" — that error is itself
+// the signal that the running helper process predates the panel binary and
+// needs a restart. Use it at panel startup to warn about a stale helper
+// before individual operations start failing.
+func (c *Client) Hello(ctx context.Context) (int, error) {
+	resp, err := c.send(ctx, Request{Op: OpHello})
+	if err != nil {
+		return 0, err
+	}
+	return resp.Version, nil
+}
+
+// versionMismatchHint explains a failed call when the responding helper
+// speaks a different protocol version than the panel: the shared binary was
+// upgraded but the helper unit was not restarted, so new operations hit its
+// old dispatch table.
+func versionMismatchHint(resp *Response) string {
+	if resp.Version == ProtocolVersion {
+		return ""
+	}
+	return fmt.Sprintf("helper protocol version %d does not match the panel's %d; the lightpanel-helper service is running an outdated binary and must be restarted (systemctl restart lightpanel-helper)", resp.Version, ProtocolVersion)
+}
+
+func (c *Client) send(ctx context.Context, req Request) (*Response, error) {
 	if c == nil || c.Socket == "" {
-		return "", fmt.Errorf("%w: helper not configured", ErrHelper)
+		return nil, fmt.Errorf("%w: helper not configured", ErrHelper)
 	}
 	d := net.Dialer{}
 	conn, err := d.DialContext(ctx, "unix", c.Socket)
 	if err != nil {
-		return "", fmt.Errorf("%w: helper socket %s: %v (is the lightpanel-helper service running?)", ErrHelper, c.Socket, err)
+		return nil, fmt.Errorf("%w: helper socket %s: %v (is the lightpanel-helper service running?)", ErrHelper, c.Socket, err)
 	}
 	defer conn.Close()
 	// Baseline 60s; a caller-provided context deadline may extend it (bounded
@@ -47,24 +92,14 @@ func (c *Client) Call(ctx context.Context, req Request) (string, error) {
 	}
 	_ = conn.SetDeadline(deadline)
 	if err = json.NewEncoder(conn).Encode(req); err != nil {
-		return "", fmt.Errorf("%w: send request: %v", ErrHelper, err)
+		return nil, fmt.Errorf("%w: send request: %v", ErrHelper, err)
 	}
 	var resp Response
 	if err = json.NewDecoder(bufio.NewReader(io.LimitReader(conn, responseLimit))).Decode(&resp); err != nil {
 		if errors.Is(err, io.EOF) {
-			return "", fmt.Errorf("%w: helper closed the connection without a response", ErrHelper)
+			return nil, fmt.Errorf("%w: helper closed the connection without a response", ErrHelper)
 		}
-		return "", fmt.Errorf("%w: read response: %v", ErrHelper, err)
+		return nil, fmt.Errorf("%w: read response: %v", ErrHelper, err)
 	}
-	if !resp.OK {
-		msg := resp.Error
-		if msg == "" {
-			msg = "rejected"
-		}
-		if resp.Output != "" {
-			msg += "\n" + TrimOutput(resp.Output)
-		}
-		return resp.Output, fmt.Errorf("%w: %s", ErrHelper, msg)
-	}
-	return resp.Output, nil
+	return &resp, nil
 }

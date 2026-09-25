@@ -20,7 +20,16 @@ const (
 	OpSite           = "site"            // managed web-site configuration, gated by allow_sites
 	OpApp            = "app"             // install a catalog app via the system package manager, gated by allow_apps
 	OpDatabase       = "database"        // managed database operations, gated by allow_databases
+	OpHello          = "hello"           // protocol handshake; no ACL, returns ProtocolVersion
 )
+
+// ProtocolVersion is the protocol revision this binary speaks. The helper
+// echoes it in every response, and a panel that sees a different value knows
+// the running helper process is stale — the panel and helper share one
+// binary but restart separately, so an upgrade leaves the old helper image
+// running until it is restarted. Without the handshake such a helper fails
+// new operations with a bare "unknown operation".
+const ProtocolVersion = 1
 
 var serviceActions = map[string]bool{"start": true, "stop": true, "restart": true, "reload": true, "enable": true, "disable": true}
 
@@ -103,6 +112,9 @@ type Response struct {
 	OK     bool   `json:"ok"`
 	Output string `json:"output,omitempty"`
 	Error  string `json:"error,omitempty"`
+	// Version is the helper's protocol version, set on every response.
+	// Absent (0) means the helper predates the handshake entirely.
+	Version int `json:"version,omitempty"`
 }
 
 // ErrHelper is wrapped into every failure returned to the panel so callers

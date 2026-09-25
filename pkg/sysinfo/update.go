@@ -4,8 +4,6 @@ package sysinfo
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -198,33 +196,7 @@ func downloadToFile(ctx context.Context, url string, dst *os.File, limit int64) 
 }
 
 func verifyChecksum(dir, asset, target string) error {
-	manifest, err := os.ReadFile(filepath.Join(dir, "SHA256SUMS"))
-	if err != nil {
-		return err
-	}
-	var expected string
-	for _, line := range strings.Split(string(manifest), "\n") {
-		fields := strings.Fields(strings.TrimSpace(line))
-		if len(fields) == 2 && fields[1] == asset {
-			expected = strings.ToLower(fields[0])
-		}
-	}
-	if len(expected) != 64 {
-		return fmt.Errorf("SHA256SUMS has no entry for %s", asset)
-	}
-	f, err := os.Open(target)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	sum := sha256.New()
-	if _, err = io.Copy(sum, f); err != nil {
-		return err
-	}
-	if got := hex.EncodeToString(sum.Sum(nil)); got != expected {
-		return fmt.Errorf("checksum mismatch: expected %s, got %s", expected, got)
-	}
-	return nil
+	return helper.VerifyChecksum(filepath.Join(dir, "SHA256SUMS"), asset, target)
 }
 
 func defaultScheduleRestart() {
