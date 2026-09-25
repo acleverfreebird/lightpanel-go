@@ -39,6 +39,10 @@ type ServerConfig struct {
 	// managed delete, engine reload, certbot). These are name-parameterized,
 	// so unlike services they are a single opt-in grant.
 	AllowSites bool
+	// AllowApps gates app-store installs through the system package manager.
+	// App names and every argument are rebuilt helper-side from a fixed
+	// catalog, so this is also a single opt-in grant.
+	AllowApps bool
 	// PanelUnit is the systemd unit restarted after a successful self-update.
 	PanelUnit string
 }
@@ -180,7 +184,7 @@ func Run(ctx context.Context, cfg ServerConfig, log *slog.Logger) error {
 		_ = l.Close()
 	}()
 	log.Info("helper_listening", "socket", cfg.Socket, "allowed_users", cfg.AllowedUsers,
-		"services", len(cfg.Services), "firewall", cfg.AllowFirewall, "kill", cfg.AllowKill, "update", cfg.AllowUpdate, "sites", cfg.AllowSites)
+		"services", len(cfg.Services), "firewall", cfg.AllowFirewall, "kill", cfg.AllowKill, "update", cfg.AllowUpdate, "sites", cfg.AllowSites, "apps", cfg.AllowApps)
 	slots := make(chan struct{}, 16)
 	for {
 		conn, err := l.Accept()
@@ -223,9 +227,13 @@ func (s *server) handle(conn net.Conn) {
 		return
 	}
 	// Certificate issuance waits on the ACME network round-trip; extend the
-	// connection budget for it. Everything else keeps the 60s bound.
+	// connection budget for it. Package installs wait on mirrors and can run
+	// for several minutes. Everything else keeps the 60s bound.
 	if req.Op == OpSite && (req.Action == "issue-cert" || req.Action == "cert-status") {
 		_ = conn.SetDeadline(time.Now().Add(5 * time.Minute))
+	}
+	if req.Op == OpApp {
+		_ = conn.SetDeadline(time.Now().Add(appInstallDeadline))
 	}
 	resp := s.dispatch(uid, &req)
 	_ = json.NewEncoder(conn).Encode(resp)
@@ -281,6 +289,14 @@ func (s *server) dispatch(uid int, req *Request) Response {
 		return s.installUpdate(uid, req)
 	case OpSite:
 		return s.site(req)
+	case OpApp:
+		if !s.cfg.AllowApps {
+			return Response{Error: "app installation requires allow_apps = true in [helper]"}
+		}
+		if !ValidAppAction(req.Action) {
+			return Response{Error: "unsupported app action"}
+		}
+		return s.appInstall(req)
 	default:
 		return Response{Error: "unknown operation"}
 	}

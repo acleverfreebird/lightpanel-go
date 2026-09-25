@@ -30,8 +30,10 @@ pkg/sysinfo/update.go        检查 GitHub Release、校验 SHA256、替换二�
 pkg/sysinfo/logs.go          journalctl 系统与服务日志
 pkg/sysinfo/firewall.go      UFW/firewalld 状态和端口规则
 pkg/sysinfo/sites.go         站点管理：环境识别、nginx/Apache 配置解析、静态站点与 Docker 部署
+pkg/sysinfo/apps.go          应用商店：应用目录状态检测、后台安装任务
 pkg/helper/protocol.go       最小特权 helper 协议（请求/响应、目录校验）
 pkg/helper/sites.go          站点校验器/配置模板/托管目录规则（面板与 helper 共享）
+pkg/helper/apps.go           应用目录与软件包管理器安装参数白名单（面板与 helper 共享）
 pkg/helper/acl.go            按服务/动作的授权 ACL 与防火墙参数白名单
 pkg/helper/client.go         面板侧 helper 客户端（unix socket）
 pkg/helper/server_linux.go   helper 服务端：SO_PEERCRED、白名单执行、更新安装
@@ -51,7 +53,7 @@ docs/VALIDATION.md           验证记录与已知限制
 
 ### MVP 范围
 
-已实现：系统概览（指标趋势、主机信息、运行诊断）、进程搜索/分页/结束、systemd 服务管理（已加载与已安装单元、启停/重启/重载/开机自启）、全盘文件浏览/上传/下载/新建文件夹/重命名/在线编辑/递归删除/权限、版本检查与一键更新、单管理员登录和可选只读权限、系统/服务日志、防火墙端口规则、站点管理（自动识别 Nginx/Apache/Docker/certbot，浏览已配置站点，创建静态站点、反向代理或 Docker 容器部署，Let's Encrypt 证书签发，受控删除与重载）。Web 终端是需求中的可选项，本版不包含，`/ws/terminal` 返回 404。
+已实现：系统概览（指标趋势、主机信息、运行诊断）、进程搜索/分页/结束、systemd 服务管理（已加载与已安装单元、启停/重启/重载/开机自启）、全盘文件浏览/上传/下载/新建文件夹/重命名/在线编辑/递归删除/权限、版本检查与一键更新、单管理员登录和可选只读权限、系统/服务日志、防火墙端口规则、站点管理（自动识别 Nginx/Apache/Docker/certbot，浏览已配置站点，创建静态站点、反向代理或 Docker 容器部署，Let's Encrypt 证书签发，受控删除与重载）、应用商店（通过系统软件包管理器一键安装 Nginx/Apache/Docker/certbot，安装为后台任务并可查看进度与输出）。Web 终端是需求中的可选项，本版不包含，`/ws/terminal` 返回 404。
 
 安全边界：这是有权限的主机管理工具，不是多租户容器。文件管理面向**整个文件系统**：所有接口只接受绝对路径，`..` 组件、反斜杠与 NUL 一律拒绝；`/proc`、`/sys`、`/dev`、`/run` 这四个虚拟系统目录拒绝删除与移动。下载/编辑读取只接受普通文件（符号链接若最终指向普通文件也可下载）；chmod 只接受普通文件与目录，且拒绝 setuid/setgid 与符号链接；只允许普通文件上传，禁止覆盖；目录删除默认要求为空，带 `recursive=true` 时递归删除且不允许删除根；在线编辑只处理 ≤1 MiB 且不含 NUL 的普通文件，保存先写临时文件再原子替换，且拒绝以符号链接为目标的写入。进程以 root 运行时这些接口等同 root 文件权限；默认的最小特权模式下面板以专用非特权用户 `lightpanel` 运行（见「最小特权 helper」），文件接口仅等同该用户权限。无论哪种模式，请务必启用 TLS/反代并保管好管理员密码。
 
@@ -97,6 +99,9 @@ API 默认必须登录。页面 `GET /` 未登录时跳转到 `/login`；API 返
 | POST | `/api/sites/action` | `id,op=start或stop或delete或reload,engine`；Docker 仅允许对带面板标签/名称前缀的容器操作；原生删除仅允许删除含 `# managed by lightpanel` 标记的配置，删除后重载引擎 |
 | GET | `/api/sites/certs` | certbot 证书列表（原文输出）；certbot 未安装返回 501 |
 | POST | `/api/sites/cert` | `domain,email,engine=nginx或apache`；certbot HTTP-01 为单个具体域名签发证书并自动改写站点配置启用 HTTPS（通配符域名需 DNS-01，不支持） |
+| GET | `/api/apps` | 应用商店总览：`package_manager`（apt-get/dnf/yum/zypper/apk 自动探测）+ `items`（固定目录 nginx/apache/docker/certbot 的安装、运行与版本）+ `job`（最近一次安装任务状态） |
+| POST | `/api/apps/install` | `name`（必须是应用目录白名单键）；在后台启动安装任务并立即返回，同一时间只允许一个安装任务（占用中返回 409） |
+| GET | `/api/apps/job` | 查询安装任务：`app,state=running或done或error,output,error`；前端每 3 秒轮询直到结束 |
 | GET | `/api/health` | 运行诊断：UID 与模式（root/helper/普通/只读）、systemd 与系统工具可用性、helper 配置与可达性、中文告警；只读投影，不含路径与错误详情 |
 
 普通成功返回 JSON；操作失败返回纯文本与非 2xx。400 参数非法、401 未登录、403 权限/CSRF/Host 拒绝、404 文件不存在、409 文件冲突或进程变化、413 上传过大、429 登录限流、501 工具/内核能力不支持、502 系统命令失败、503 并发满、504 命令超时。服务命令错误不会伪装成成功。
@@ -115,6 +120,13 @@ API 默认必须登录。页面 `GET /` 未登录时跳转到 `/login`；API 返
 - 破坏性边界：原生配置删除要求文件包含 `# managed by lightpanel` 标记且位于托管目录内；Docker 操作仅允许带 `lightpanel.site` 标签或 `lightpanel-` 名称前缀的容器。
 - HTTPS 证书：certbot 探测后可按站点申请 Let's Encrypt 证书（HTTP-01，单个具体域名），`--nginx`/`--apache` 安装器插件自动改写站点配置；证书列表面板展示 `certbot certificates` 原文。
 - 最小特权模式：原生建站/删除/重载/证书签发经 helper 的 `site` 操作（`allow_sites = true`），配置内容由 helper 用共享校验器与模板在本地重新生成，面板不传递文件内容；root 模式由面板直接执行。helper 未授权或权限不足时返回 502/403 并提示。
+
+应用商店语义：
+
+- 固定目录：仅 nginx、apache、docker、certbot 四项；应用名必须是目录白名单键，不接受任意软件包名。
+- 包管理器自动探测：按 apt-get → dnf → yum → zypper → apk 顺序探测，安装参数由共享目录（`pkg/helper/apps.go`）按发行版重建（如 apache 在 Debian 系为 `apache2`、RHEL 系为 `httpd`），面板不传递原始 argv。
+- 后台任务：安装可能持续数分钟，`POST /api/apps/install` 启动后台任务后立即返回，前端轮询 `/api/apps/job` 展示进度与包管理器输出；同一时间仅允许一个安装任务。apt-get 安装前会先刷新软件包列表（刷新失败不阻断安装）。
+- 最小特权模式：安装经 helper 的 `app` 操作（`allow_apps = true`），helper 端重新探测包管理器并重建全部参数；root 模式由面板直接执行。
 
 CPU/网络首次请求用于建立基线，后续返回采样间隔平均值；共享缓存最多每 2 秒采样一次。网络是非 loopback 接口汇总，虚拟网卡可能重复计数；磁盘显示根分区。进程只展示 UID、名称、状态、RSS，不收集可能包含密码的完整命令行。
 
@@ -268,6 +280,7 @@ allow_firewall = true   # ufw/firewalld 端口规则（读+写）
 allow_kill = true       # 对任意进程发 SIGTERM/SIGKILL（进程身份经 pidfd 固定）
 allow_update = true     # 在线更新：helper 复核 SHA256 后安装并重启面板
 allow_sites = true      # 托管站点：配置写入（helper 端重新生成内容）、托管删除、引擎重载、certbot
+allow_apps = true       # 应用商店：经系统软件包管理器安装固定目录中的应用（参数在 helper 端重建）
 
 # 按服务/动作细分授权：单元名 = 允许的 systemd 动作（start/stop/restart）。
 # 空表 = 拒绝一切服务控制；"*" 条目把动作授予所有单元（旧版行为）。

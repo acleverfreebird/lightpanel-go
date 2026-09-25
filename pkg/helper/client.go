@@ -36,12 +36,13 @@ func (c *Client) Call(ctx context.Context, req Request) (string, error) {
 	}
 	defer conn.Close()
 	// Baseline 60s; a caller-provided context deadline may extend it (bounded
-	// at 6 minutes) so long ACME issuances survive the round-trip.
+	// at 10 minutes) so long ACME issuances and package installs survive the
+	// round-trip.
 	deadline := time.Now().Add(60 * time.Second)
 	if d2, ok := ctx.Deadline(); ok && d2.After(deadline) {
 		deadline = d2
 	}
-	if max := time.Now().Add(6 * time.Minute); deadline.After(max) {
+	if max := time.Now().Add(10 * time.Minute); deadline.After(max) {
 		deadline = max
 	}
 	_ = conn.SetDeadline(deadline)

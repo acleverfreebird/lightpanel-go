@@ -72,6 +72,7 @@ func runHelper(args []string) error {
 		AllowKill:     cfg.Helper.AllowKill,
 		AllowUpdate:   cfg.Helper.AllowUpdate,
 		AllowSites:    cfg.Helper.AllowSites,
+		AllowApps:     cfg.Helper.AllowApps,
 		PanelUnit:     "lightpanel",
 	}, slog.Default())
 }

@@ -17,6 +17,7 @@
       <button data-tab="overview" class="active"><span aria-hidden="true">▦</span>系统概览</button>
       <button data-tab="processes"><span aria-hidden="true">≋</span>进程管理</button>
       <button data-tab="services"><span aria-hidden="true">◈</span>系统服务</button>
+      <button data-tab="apps"><span aria-hidden="true">◫</span>应用商店</button>
       <button data-tab="sites"><span aria-hidden="true">▤</span>站点管理</button>
       <button data-tab="files"><span aria-hidden="true">▱</span>文件管理</button>
       <button data-tab="logs"><span aria-hidden="true">≡</span>系统日志</button>
@@ -50,6 +51,9 @@
       </section>
       <section id="files" hidden aria-label="文件空间">
         <article class="panel"><div class="panel-heading"><div><h2>文件管理</h2><p>浏览和管理服务器上的全部文件：新建文件夹、重命名、在线编辑、权限与递归删除；上传不会覆盖同名文件</p></div><span class="badge">全盘访问</span></div><div id="file-breadcrumbs" class="breadcrumbs" aria-label="目录路径"></div><form id="file-path-form" class="toolbar"><button type="button" id="file-up" class="secondary" aria-label="返回上级目录">↑ 上级</button><input name="path" value="/" aria-label="绝对路径" placeholder="输入绝对路径，例如 /etc/nginx"><button class="secondary">前往</button></form><div class="toolbar file-tools"><div class="search-field"><span aria-hidden="true">⌕</span><input id="file-filter" placeholder="筛选当前页文件名…" aria-label="筛选文件"></div><select id="file-sort" aria-label="排序方式"><option value="name">按名称排序</option><option value="name-desc">按名称倒序</option><option value="size">按大小升序</option><option value="size-desc">按大小降序</option><option value="mtime">最近修改在前</option></select><button type="button" id="file-mkdir" data-mutation>＋ 新建文件夹</button></div><form id="upload-form" class="upload-strip"><label class="file-picker"><span>＋ 选择文件</span><input type="file" name="file" multiple required aria-label="选择上传文件"></label><span id="upload-name" class="muted">未选择文件 · 最大 {{.UploadMB}} MiB</span><button data-mutation>上传到当前目录</button></form><div id="file-list" class="table-wrap"></div><div class="pagination"><span id="file-page"></span><div><button id="file-prev" class="secondary">← 上一页</button><button id="file-next" class="secondary">下一页 →</button></div></div></article>
+      </section>
+      <section id="apps" hidden aria-label="应用商店">
+        <article class="panel"><div class="panel-heading"><div><h2>可安装的应用 <span id="app-count" class="count">—</span></h2><p>通过系统软件包管理器一键安装网页服务器与配套组件；安装完成后即可在「站点管理」部署站点</p></div><button type="button" id="app-refresh" class="secondary"><span aria-hidden="true">↻</span> 重新检测</button></div><div class="toolbar"><span id="app-manager" class="muted">正在识别软件包管理器…</span></div><div id="app-list" class="cards"><article class="metric-card skeleton">正在读取应用列表…</article></div><pre id="app-job" class="output light-output" hidden></pre><p class="section-note">安装使用发行版官方仓库（apt / dnf / yum / zypper / apk），全程在服务器后台执行；首次安装需要下载软件包，请保持页面打开直到提示完成。最小特权模式下需要 helper 配置 allow_apps = true。</p></article>
       </section>
       <section id="sites" hidden aria-label="站点管理">
         <article class="panel"><div class="panel-heading"><div><h2>运行环境 <span id="site-env-count" class="count">—</span></h2><p>自动识别已安装的网页服务器与 Docker；检测到新安装的引擎后即可部署站点</p></div><button type="button" id="site-detect" class="secondary"><span aria-hidden="true">↻</span> 重新检测</button></div><div id="site-environment" class="cards"><article class="metric-card skeleton">正在检测运行环境…</article></div></article>

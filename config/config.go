@@ -56,6 +56,9 @@ type HelperConfig struct {
 	// AllowSites 允许托管站点操作：写入站点配置（helper 端从校验后的参数
 	// 重新生成内容）、删除带托管标记的配置、重载引擎与 certbot 证书签发。
 	AllowSites bool `toml:"allow_sites"`
+	// AllowApps 允许应用商店安装：helper 通过系统软件包管理器安装固定目录
+	// 中的应用；应用名经白名单校验，全部参数在 helper 端重建。
+	AllowApps bool `toml:"allow_apps"`
 	// StagingDir 是非 root 面板下载更新资产的目录（属主必须是面板用户，权限
 	// 不得对组/其他用户可写；helper 安装前会复核）。
 	StagingDir string `toml:"staging_dir"`

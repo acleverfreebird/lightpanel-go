@@ -18,6 +18,7 @@ const (
 	OpKill           = "kill"            // signal a process by pinned identity
 	OpUpdate         = "update"          // verify + install a checksummed update and restart the panel
 	OpSite           = "site"            // managed web-site configuration, gated by allow_sites
+	OpApp            = "app"             // install a catalog app via the system package manager, gated by allow_apps
 )
 
 var serviceActions = map[string]bool{"start": true, "stop": true, "restart": true, "reload": true, "enable": true, "disable": true}
@@ -37,6 +38,14 @@ var siteActions = map[string]bool{
 
 // ValidSiteAction reports whether action is a helper-permitted site operation.
 func ValidSiteAction(action string) bool { return siteActions[action] }
+
+// App actions for OpApp. The only action is "install": the helper resolves
+// the system package manager itself and rebuilds the full argv from the
+// catalog in apps.go — the panel only sends the app name.
+var appActions = map[string]bool{"install": true}
+
+// ValidAppAction reports whether action is a helper-permitted app operation.
+func ValidAppAction(action string) bool { return appActions[action] }
 
 // Request is one privileged operation. Fields not relevant to Op are ignored.
 type Request struct {
@@ -59,6 +68,9 @@ type Request struct {
 	Root        string `json:"root,omitempty"`
 	ProxyTarget string `json:"proxy_target,omitempty"`
 	Email       string `json:"email,omitempty"`
+	// OpApp fields. App must be a catalog key from apps.go; the helper
+	// re-derives the package name and every argument.
+	App string `json:"app,omitempty"`
 }
 
 // Response is the helper's verdict. OK=false carries a human-readable Error

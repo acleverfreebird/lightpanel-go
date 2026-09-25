@@ -36,7 +36,8 @@ func (b *limitedBuffer) Write(p []byte) (int, error) {
 }
 func executable(name string) (string, error) {
 	switch name {
-	case "systemctl", "journalctl", "ufw", "firewall-cmd", "nginx", "docker", "apache2ctl", "httpd", "certbot":
+	case "systemctl", "journalctl", "ufw", "firewall-cmd", "nginx", "docker", "apache2ctl", "httpd", "certbot",
+		"apt-get", "dnf", "yum", "zypper", "apk":
 	default:
 		return "", ErrUnavailable
 	}
