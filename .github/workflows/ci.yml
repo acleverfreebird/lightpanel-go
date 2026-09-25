@@ -40,7 +40,7 @@ jobs:
         with:
           node-version: 22
       - name: Front-end unit tests
-        run: node --test scripts/
+        run: node --test scripts/*.test.mjs
 
   build:
     runs-on: ubuntu-latest
