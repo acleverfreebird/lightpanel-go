@@ -166,8 +166,26 @@ install_go() {
   GO="/usr/local/go/bin/go"
 }
 
+resolve_version() {
+  # 供 -X main.version 注入；源码 tarball 没有 git 元数据，需自行确定版本号。
+  if [ -n "${LP_VERSION:-}" ]; then printf '%s' "$LP_VERSION"; return; fi
+  if [ "$REF" != "main" ]; then printf '%s' "$REF"; return; fi
+  local tmp="$WORK/ver.json" url prefix="${LP_SOURCE_MIRROR:-}"
+  for url in "${prefix}https://api.github.com/repos/$REPO/releases/latest" \
+             "https://api.github.com/repos/$REPO/releases/latest"; do
+    rm -f "$tmp"
+    if fetch "$url" "$tmp" 2>/dev/null && [ -s "$tmp" ] \
+       && grep -q '"tag_name"' "$tmp"; then
+      sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$tmp" | head -n 1
+      return
+    fi
+  done
+  printf '%s' "$REF"
+}
+
 build_from_source() {
   local tarball="$WORK/src.tar.gz" url ok=0 prefix="${LP_SOURCE_MIRROR:-}"
+  local VERSION; VERSION="$(resolve_version)"
   log "下载源码: github.com/$REPO (ref: $REF)"
   for url in \
     "${prefix}https://codeload.github.com/$REPO/tar.gz/refs/heads/$REF" \
@@ -181,13 +199,14 @@ build_from_source() {
   mkdir -p "$WORK/src"
   tar -xzf "$tarball" -C "$WORK/src" --strip-components=1
   find_go || install_go
-  log "编译中: CGO_ENABLED=0 GOOS=linux GOARCH=$ARCH"
+  log "编译中: CGO_ENABLED=0 GOOS=linux GOARCH=$ARCH (version: $VERSION)"
+  local LDFLAGS="-s -w -X main.version=$VERSION"
   if ! (cd "$WORK/src" && CGO_ENABLED=0 GOOS=linux GOARCH="$ARCH" GOTOOLCHAIN=auto \
-        "$GO" build -trimpath -ldflags='-s -w' -o "$WORK/lightpanel" .); then
+        "$GO" build -trimpath -ldflags="$LDFLAGS" -o "$WORK/lightpanel" .); then
     log "默认模块代理不可用，改用 goproxy.cn 重试..."
     (cd "$WORK/src" && CGO_ENABLED=0 GOOS=linux GOARCH="$ARCH" GOTOOLCHAIN=auto \
      GOPROXY="https://goproxy.cn,direct" \
-     "$GO" build -trimpath -ldflags='-s -w' -o "$WORK/lightpanel" .) \
+     "$GO" build -trimpath -ldflags="$LDFLAGS" -o "$WORK/lightpanel" .) \
      || fail "编译失败"
   fi
 }
