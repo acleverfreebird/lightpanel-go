@@ -63,6 +63,10 @@ func newHandler(cfg *config.Config, files *sysinfo.Files, manager *sysinfo.Manag
 	register("POST /api/update/apply", sysinfo.UpdateApply)
 	register("GET /api/firewall", manager.Firewall)
 	register("POST /api/firewall/rule", manager.FirewallAction)
+	sites := sysinfo.NewSiteManager()
+	register("GET /api/sites", sites.Sites)
+	register("POST /api/sites/create", sites.SiteCreate)
+	register("POST /api/sites/action", sites.SiteAction)
 	return security(cfg, files.UploadLimit(), mux), nil
 }
 

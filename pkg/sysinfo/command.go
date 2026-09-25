@@ -36,7 +36,7 @@ func (b *limitedBuffer) Write(p []byte) (int, error) {
 }
 func executable(name string) (string, error) {
 	switch name {
-	case "systemctl", "journalctl", "ufw", "firewall-cmd":
+	case "systemctl", "journalctl", "ufw", "firewall-cmd", "nginx", "docker", "apache2ctl", "httpd":
 	default:
 		return "", ErrUnavailable
 	}
@@ -49,11 +49,18 @@ func executable(name string) (string, error) {
 	return "", ErrUnavailable
 }
 func RunCommand(parent context.Context, name string, args ...string) (string, error) {
+	return RunCommandTimeout(parent, 8*time.Second, name, args...)
+}
+
+// RunCommandTimeout allows long-running operations such as docker image
+// pulls. Every other guarantee is identical to RunCommand: fixed binary
+// lookup, scrubbed environment and a hard output cap.
+func RunCommandTimeout(parent context.Context, timeout time.Duration, name string, args ...string) (string, error) {
 	p, err := executable(name)
 	if err != nil {
 		return "", err
 	}
-	ctx, cancel := context.WithTimeout(parent, 8*time.Second)
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, p, args...)
 	cmd.Env = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "LANG=C", "LC_ALL=C", "SYSTEMD_PAGER=cat", "SYSTEMD_COLORS=0"}

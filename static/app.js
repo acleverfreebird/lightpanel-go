@@ -4,12 +4,14 @@ import { diagnostics } from './diagnostics.js';
 import { processes, services, setupProcesses, setupServices } from './services.js';
 import { files, setupFiles } from './files.js';
 import { logs, firewall, setupTools } from './tools.js';
+import { sites, setupSites } from './sites.js';
 import { setupUpdate } from './update.js';
 
 const pages = {
   overview: ['系统概览', '掌握资源使用情况，让每一次运维都有据可循。', () => Promise.all([overview(), diagnostics()])],
   processes: ['进程管理', '定位资源占用，安全地管理正在运行的进程。', processes],
   services: ['系统服务', '快速筛选服务状态，查看详情并执行维护操作。', services],
+  sites: ['站点管理', '自动识别网页服务器与 Docker，部署和管理站点。', sites],
   files: ['文件管理', '浏览和管理服务器上的全部文件与目录。', files],
   logs: ['系统日志', '从系统事件到服务日志，让问题排查更有方向。', logs],
   firewall: ['防火墙', '查看访问规则，按端口与协议管理服务器连接。', firewall],
@@ -75,7 +77,7 @@ $('.skip-link').addEventListener('click', event => {
 });
 $('#refresh').addEventListener('click', guard(() => { message(''); return refresh(); }));
 $('#message-close').addEventListener('click', () => message(''));
-setupProcesses(); setupServices(go); setupFiles(); setupTools(); setupUpdate();
+setupProcesses(); setupServices(go); setupFiles(); setupTools(); setupSites(go); setupUpdate();
 if (readOnly) document.querySelectorAll('[data-mutation]').forEach(control => { control.disabled = true; control.title = '当前账号只有查看权限'; });
 $('#auto-refresh').addEventListener('change', () => { if ($('#auto-refresh').checked && current === 'overview') refresh(); });
 setInterval(() => { if (!document.hidden && current === 'overview' && $('#auto-refresh').checked) refresh(); }, 3000);

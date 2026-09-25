@@ -29,6 +29,7 @@ pkg/sysinfo/filemanager.go   全盘文件浏览/上传/下载/新建/重命名/�
 pkg/sysinfo/update.go        检查 GitHub Release、校验 SHA256、替换二进制并重启服务
 pkg/sysinfo/logs.go          journalctl 系统与服务日志
 pkg/sysinfo/firewall.go      UFW/firewalld 状态和端口规则
+pkg/sysinfo/sites.go         站点管理：环境识别、nginx/Apache 配置解析、静态站点与 Docker 部署
 pkg/helper/protocol.go       最小特权 helper 协议（请求/响应、目录校验）
 pkg/helper/acl.go            按服务/动作的授权 ACL 与防火墙参数白名单
 pkg/helper/client.go         面板侧 helper 客户端（unix socket）
@@ -49,7 +50,7 @@ docs/VALIDATION.md           验证记录与已知限制
 
 ### MVP 范围
 
-已实现：系统概览（指标趋势、主机信息、运行诊断）、进程搜索/分页/结束、systemd 服务管理（已加载与已安装单元、启停/重启/重载/开机自启）、全盘文件浏览/上传/下载/新建文件夹/重命名/在线编辑/递归删除/权限、版本检查与一键更新、单管理员登录和可选只读权限、系统/服务日志、防火墙端口规则。Web 终端是需求中的可选项，本版不包含，`/ws/terminal` 返回 404。
+已实现：系统概览（指标趋势、主机信息、运行诊断）、进程搜索/分页/结束、systemd 服务管理（已加载与已安装单元、启停/重启/重载/开机自启）、全盘文件浏览/上传/下载/新建文件夹/重命名/在线编辑/递归删除/权限、版本检查与一键更新、单管理员登录和可选只读权限、系统/服务日志、防火墙端口规则、站点管理（自动识别已安装的 Nginx/Apache/Docker，浏览已配置站点，创建静态站点或 Docker 容器部署，受控删除与重载）。Web 终端是需求中的可选项，本版不包含，`/ws/terminal` 返回 404。
 
 安全边界：这是有权限的主机管理工具，不是多租户容器。文件管理面向**整个文件系统**：所有接口只接受绝对路径，`..` 组件、反斜杠与 NUL 一律拒绝；`/proc`、`/sys`、`/dev`、`/run` 这四个虚拟系统目录拒绝删除与移动。下载/编辑读取只接受普通文件（符号链接若最终指向普通文件也可下载）；chmod 只接受普通文件与目录，且拒绝 setuid/setgid 与符号链接；只允许普通文件上传，禁止覆盖；目录删除默认要求为空，带 `recursive=true` 时递归删除且不允许删除根；在线编辑只处理 ≤1 MiB 且不含 NUL 的普通文件，保存先写临时文件再原子替换，且拒绝以符号链接为目标的写入。进程以 root 运行时这些接口等同 root 文件权限；默认的最小特权模式下面板以专用非特权用户 `lightpanel` 运行（见「最小特权 helper」），文件接口仅等同该用户权限。无论哪种模式，请务必启用 TLS/反代并保管好管理员密码。
 
@@ -90,6 +91,9 @@ API 默认必须登录。页面 `GET /` 未登录时跳转到 `/login`；API 返
 | GET | `/api/logs` | `name` 可选；`lines=1..1000` 默认 200 |
 | GET | `/api/firewall` | `engine=ufw或firewalld` 可选；返回状态与规则文本 |
 | POST | `/api/firewall/rule` | `engine,port=1..65535,protocol=tcp或udp,action` |
+| GET | `/api/sites` | 站点管理总览：`environment`（nginx/apache/docker 的安装、运行与版本）+ `items`（解析 nginx `sites-enabled`/`conf.d` 与 Apache `sites-enabled`/`conf.d` 得到的 server 块/VirtualHost，以及发布了端口的 Docker 容器） |
+| POST | `/api/sites/create` | `name,engine=auto或nginx或apache或docker,domain,port,root(原生),image,container_port(Docker)`；原生模式创建站点目录、占位首页与配置文件（Debian 系写入 sites-available 并软链，RHEL 系写入 conf.d），随后重载引擎；Docker 模式以 `lightpanel-<name>` 启动带 `lightpanel.site` 标签、`--restart unless-stopped` 的容器并映射端口 |
+| POST | `/api/sites/action` | `id,op=start或stop或delete或reload,engine`；Docker 仅允许对带面板标签/名称前缀的容器操作；原生删除仅允许删除含 `# managed by lightpanel` 标记的配置，删除后重载引擎 |
 | GET | `/api/health` | 运行诊断：UID 与模式（root/helper/普通/只读）、systemd 与系统工具可用性、helper 配置与可达性、中文告警；只读投影，不含路径与错误详情 |
 
 普通成功返回 JSON；操作失败返回纯文本与非 2xx。400 参数非法、401 未登录、403 权限/CSRF/Host 拒绝、404 文件不存在、409 文件冲突或进程变化、413 上传过大、429 登录限流、501 工具/内核能力不支持、502 系统命令失败、503 并发满、504 命令超时。服务命令错误不会伪装成成功。
@@ -99,6 +103,14 @@ API 默认必须登录。页面 `GET /` 未登录时跳转到 `/login`；API 返
 - UFW：`allow`、`deny`、`remove-allow`、`remove-deny`，变更持久保存；不会自动启用防火墙。
 - firewalld：仅 `allow`、`remove-allow`，修改**默认区域的运行时规则**，重载/重启后丢弃。移除一个放行规则不是显式拒绝，故不接受 `deny`。
 - 自动检测优先 firewalld，再 UFW；若同时安装，建议显式选择实际运行的引擎。
+
+站点管理语义：
+
+- 环境`自动识别`：探测 nginx、apache2ctl/httpd 与 docker 二进制及 systemd 运行状态；Docker 额外校验守护进程可达。
+- 列表：解析 `sites-enabled`/`conf.d` 下的 server 块与 VirtualHost（监听端口、server_name、root、proxy_pass、SSL），并展示发布了宿主端口的 Docker 容器；未发布的容器不出现在面板里。
+- 创建：原生模式只写"最小静态站点"配置（不存在才写入，原子替换、永不覆盖），Debian 系自动建立 sites-enabled 软链，创建后重载引擎；使用默认 `/var/www/<name>` 时自动创建目录和占位首页。Docker 模式固定参数模板启动容器，镜像引用做严格白名单校验。
+- 破坏性边界：原生配置删除要求文件包含 `# managed by lightpanel` 标记且位于托管目录内；Docker 操作仅允许带 `lightpanel.site` 标签或 `lightpanel-` 名称前缀的容器。
+- 权限：写入 `/etc` 配置要求面板进程具备相应权限（root 模式或部署在可写挂载上）；重载动作走 helper 时受其服务 ACL 约束，需在 helper 配置中为 `nginx.service`/`apache2.service`/`httpd.service` 授予 `reload`。非特权模式下若配置写入被拒绝，面板返回 403 并提示。
 
 CPU/网络首次请求用于建立基线，后续返回采样间隔平均值；共享缓存最多每 2 秒采样一次。网络是非 loopback 接口汇总，虚拟网卡可能重复计数；磁盘显示根分区。进程只展示 UID、名称、状态、RSS，不收集可能包含密码的完整命令行。
 
