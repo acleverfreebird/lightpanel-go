@@ -24,7 +24,7 @@ function engineCard(info) {
     : ['未安装', 'warn'];
   card.append(badge(state[0], state[1]));
   card.append(el('p', info.version || info.detail || '—'));
-  const error = data.errors[info.engine];
+  const error = data.errors?.[info.engine];
   if (error) {
     const note = el('p', undefined, 'muted');
     note.textContent = `读取列表失败：${error}`;

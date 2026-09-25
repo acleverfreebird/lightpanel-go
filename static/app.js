@@ -8,6 +8,16 @@ import { sites, setupSites } from './sites.js';
 import { databases, setupDatabases } from './databases.js';
 import { apps, setupApps } from './apps.js';
 import { setupUpdate } from './update.js';
+import { hydrateIcons } from './icons.js';
+
+hydrateIcons();
+
+const pageKickers = {
+  overview: 'OVERVIEW / 系统总览', processes: 'OPERATIONS / 进程',
+  services: 'OPERATIONS / 服务', apps: 'DEPLOY / 应用', sites: 'DEPLOY / 站点',
+  databases: 'DEPLOY / 数据', files: 'OPERATIONS / 文件',
+  logs: 'OPERATIONS / 日志', firewall: 'SECURITY / 访问控制',
+};
 
 const pages = {
   overview: ['系统概览', '掌握资源使用情况，让每一次运维都有据可循。', () => Promise.all([overview(), diagnostics()])],
@@ -64,6 +74,7 @@ function navigate(name, focus = false) {
   });
   $('#top-title').textContent = $('#page-title').textContent = pages[current][0];
   $('#page-description').textContent = pages[current][1];
+  $('#page-kicker').textContent = pageKickers[current];
   document.title = `${pages[current][0]} · LightPanel`;
   message('');
   if (focus) $('#workspace').focus({ preventScroll: true });

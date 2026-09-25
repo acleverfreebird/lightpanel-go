@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import vm from 'node:vm';
 
 const app = await readFile(new URL('../static/app.js', import.meta.url), 'utf8');
 const databases = await readFile(new URL('../static/databases.js', import.meta.url), 'utf8');
@@ -35,4 +36,33 @@ test('app store catalogs the database engines', () => {
     assert.match(template, new RegExp(`<option value="${name}">`), `engine selects must offer ${name}`);
   }
   assert.doesNotMatch(template, /<option value="redis">/, 'engine selects must not offer redis');
+});
+
+test('database overview renders an error-free API response with omitted errors', async () => {
+  // The Go API marks errors as omitempty; a healthy/fresh server omits the map.
+  const nodes = new Map();
+  const node = (tag, text) => ({ tag, textContent: text, children: [],
+    append(...children) { this.children.push(...children); },
+    replaceChildren(...children) { this.children = children; },
+  });
+  const $ = selector => {
+    if (!nodes.has(selector)) nodes.set(selector, node('div'));
+    return nodes.get(selector);
+  };
+  const tables = [];
+  const context = vm.createContext({
+    $, el: node, badge: text => node('span', text),
+    document: { querySelectorAll: () => [] },
+    api: async () => ({
+      engines: ['mysql', 'mariadb', 'postgresql', 'redis'].map(engine => ({ engine, installed: false })),
+      databases: {}, users: {}, units: {},
+    }),
+    table: (target, headers, rows, emptyText) => tables.push({ target, rows, emptyText }),
+  });
+  vm.runInContext(databases.replace(/^import .*;\r?\n/gm, '').replace(/^export /gm, ''), context);
+  await context.databases();
+  assert.equal($('#db-engines').children.length, 4);
+  assert.equal($('#db-engine-count').textContent, '0 / 4 已安装');
+  assert.deepEqual(tables.map(t => t.target), ['#db-list', '#db-user-list']);
+  assert.ok(tables.every(t => t.rows.length === 0 && t.emptyText));
 });
