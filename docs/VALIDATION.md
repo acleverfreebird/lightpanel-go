@@ -163,3 +163,14 @@ WSL Ubuntu 24.04（Go 1.27.1）实测：
 - 测试：`pkg/helper/sites_test.go`（校验器边界、SiteConf 错误路径、托管路径判定）、`pkg/sysinfo/sites_test.go` 新增反代模板、helper 路由（create/delete）、证书签发与列表端点测试；`scripts/sites.test.mjs` 校验证书面板与 mode 字段接线。`go vet`、`gofmt`、`go test`、`node --test` 全部通过。
 
 配置样例：`config.toml` 的 `[helper]` 段新增 `allow_sites = true`。
+
+## 2026-09-25 应用商店安装失败的 helper 单元沙箱修复
+
+最小特权模式下安装 Nginx 报 `privileged helper operation failed: exit status 100`，apt 输出 `seteuid 42 failed - seteuid (1: Operation not permitted)`、`Failed to set new user ids - setresuid` 与大量 `/var/lib/apt/lists/partial ... Read-only file system`。
+
+根因是 `lightpanel-helper.service` 的两行加固与 helper 派生的包管理器冲突（apt/dpkg 完整继承单元沙箱）：
+
+- `RestrictSUIDSGID=true` 安装的 seccomp 过滤器拦截 `setresuid` 等 UID 变更系统调用，apt 无法降权到 `_apt` 用户（uid 42）执行下载方法，报错原文 `setresuid (1: Operation not permitted)` 与之精确对应。
+- `ProtectSystem=strict` 将整个文件系统只读（仅 `/opt/lightpanel`、`/etc/ufw`、`/etc/systemd/system` 可写），`/var/lib/apt`、`/var/cache/apt` 全部 EROFS；同理 `apt-get install`（写 `/usr`）、站点配置写入（`/etc/nginx`）、certbot（`/etc/letsencrypt`）在该单元下也必然失败。
+
+修复：helper 单元移除 `ProtectSystem=strict`/`ReadWritePaths` 与 `RestrictSUIDSGID`，保留 `NoNewPrivileges`、`PrivateTmp`、`ProtectHome` 与内核防护项（均不影响 apt/dpkg）；`LimitNOFILE=1024`、`TasksMax=128`、`MemoryHigh=256M`、`MemoryMax=512M` 为大型软件包（docker.io、mysql-server）留出计量余量。特权收敛不再依赖文件系统沙箱，而由白名单 argv（应用名/包名经 `AppInstallSteps` 目录重建、站点配置 helper 端本地生成）保证。`lightpanel-helper.service` 与 `scripts/install.sh` 内嵌单元同步修改，README 沙箱说明同步更新。

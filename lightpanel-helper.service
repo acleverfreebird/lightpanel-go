@@ -17,19 +17,23 @@ RestartSec=3
 TimeoutStopSec=15
 UMask=0077
 NoNewPrivileges=true
-# helper 需要写 /opt/lightpanel（在线更新换二进制）与 /etc/ufw（ufw 规则）；
-# 其余文件系统一律只读。firewalld 走 D-Bus，不需要本地写权限。
-ProtectSystem=strict
-ReadWritePaths=/opt/lightpanel -/etc/ufw -/etc/systemd/system
+# helper 会派生系统包管理器（应用商店 apt/dpkg 等）并写入站点与证书状态
+# （/etc/nginx、/etc/apache2、/var/www、/etc/letsencrypt、/var/lib/apt），
+# 子进程完整继承本单元的沙箱：ProtectSystem=strict 会让 /var/lib/apt 只读、
+# RestrictSUIDSGID 会拦截 apt 降权到 _apt 用户的 setresuid，二者均使安装
+# 必然失败，因此不启用文件系统写隔离与 setuid 系统调用过滤。特权收敛仍
+# 由白名单 argv（AppInstallSteps/站点模板）保证。NoNewPrivileges、
+# PrivateTmp 与内核防护项不影响包管理器，继续保留。
 ProtectHome=true
 PrivateTmp=true
 ProtectKernelTunables=true
 ProtectControlGroups=true
-RestrictSUIDSGID=true
-LimitNOFILE=256
-TasksMax=32
-MemoryHigh=32M
-MemoryMax=64M
+LimitNOFILE=1024
+TasksMax=128
+# 包管理器作为 helper 子进程运行，同一 cgroup 计量；apt/dpkg 处理大型
+# 软件包（docker.io、mysql-server）时瞬时内存可远超 64M，上限需留足。
+MemoryHigh=256M
+MemoryMax=512M
 StandardOutput=journal
 StandardError=journal
 

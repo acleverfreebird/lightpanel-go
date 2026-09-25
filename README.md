@@ -277,7 +277,7 @@ sudo journalctl -u lightpanel -n 100 --no-pager
 
 面板进程不需要任何 Linux capability；日志读取（journalctl）需要 `systemd-journal` 组（单元中已声明 `SupplementaryGroups=systemd-journal`，无该组的系统可删除此行，代价是日志页返回错误）。需要旧版 root 面板行为时把单元 `User` 改回 root（或用 `--legacy-root` 安装），此时 `[helper]` 不参与。
 
-单元启用 `NoNewPrivileges`、内核参数保护等约束。文件管理需要访问运行用户可读写的整个文件系统，因此面板单元不启用 `ProtectSystem`/`ProtectHome`/`PrivateTmp`/`ReadWritePaths` 等文件系统隔离；`/proc`、`/sys`、`/dev`、`/run` 的删除与重命名由面板自身拒绝。helper 单元则启用 `ProtectSystem=strict`，只允许写 `/opt/lightpanel` 与 `/etc/ufw`。
+单元启用 `NoNewPrivileges`、内核参数保护等约束。文件管理需要访问运行用户可读写的整个文件系统，因此面板单元不启用 `ProtectSystem`/`ProtectHome`/`PrivateTmp`/`ReadWritePaths` 等文件系统隔离；`/proc`、`/sys`、`/dev`、`/run` 的删除与重命名由面板自身拒绝。helper 单元也不启用文件系统写隔离与 `RestrictSUIDSGID`：它会派生系统包管理器（应用商店）并写入站点与证书状态，子进程完整继承单元沙箱，`ProtectSystem=strict` 会让 `/var/lib/apt` 只读、`RestrictSUIDSGID` 会拦截 apt 降权到 `_apt` 用户的 `setresuid`，二者均使安装必然失败；helper 的特权收敛依赖白名单 argv（应用名/包名/站点配置全部由 helper 端目录重建），`NoNewPrivileges`、`PrivateTmp` 与内核防护项保留。
 
 ### 最小特权 helper（默认）
 
