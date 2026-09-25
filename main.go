@@ -65,16 +65,16 @@ func runHelper(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	return helper.Run(ctx, helper.ServerConfig{
-		Socket:        cfg.Helper.Socket,
-		AllowedUsers:  cfg.Helper.AllowedUsers,
-		Services:      cfg.Helper.Services,
-		AllowFirewall: cfg.Helper.AllowFirewall,
-		AllowKill:     cfg.Helper.AllowKill,
-		AllowUpdate:   cfg.Helper.AllowUpdate,
-		AllowSites:    cfg.Helper.AllowSites,
-		AllowApps:     cfg.Helper.AllowApps,
+		Socket:         cfg.Helper.Socket,
+		AllowedUsers:   cfg.Helper.AllowedUsers,
+		Services:       cfg.Helper.Services,
+		AllowFirewall:  cfg.Helper.AllowFirewall,
+		AllowKill:      cfg.Helper.AllowKill,
+		AllowUpdate:    cfg.Helper.AllowUpdate,
+		AllowSites:     cfg.Helper.AllowSites,
+		AllowApps:      cfg.Helper.AllowApps,
 		AllowDatabases: cfg.Helper.AllowDatabases,
-		PanelUnit:     "lightpanel",
+		PanelUnit:      "lightpanel",
 	}, slog.Default())
 }
 func run() error {

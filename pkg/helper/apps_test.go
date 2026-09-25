@@ -11,7 +11,7 @@ func TestValidAppName(t *testing.T) {
 			t.Errorf("ValidAppName(%q) = false, want true", name)
 		}
 	}
-		for _, name := range []string{"", "nginx ", "Nginx", "nginx-extra", "nginx;rm", "certbot\n", "../../etc", "mysql8", "postgres", "mongodb"} {
+	for _, name := range []string{"", "nginx ", "Nginx", "nginx-extra", "nginx;rm", "certbot\n", "../../etc", "mysql8", "postgres", "mongodb"} {
 		if ValidAppName(name) {
 			t.Errorf("ValidAppName(%q) = true, want false", name)
 		}
