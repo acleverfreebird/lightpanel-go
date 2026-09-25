@@ -4,18 +4,32 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - name: Check formatting
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "Files needing gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
       - name: Vet
         run: go vet ./...
       - name: Test with race detector
@@ -30,6 +44,7 @@ jobs:
 
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -39,16 +54,25 @@ jobs:
         run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o dist/lightpanel-linux-amd64 .
       - name: Build linux/arm64
         run: CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o dist/lightpanel-linux-arm64 .
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: lightpanel-binaries
+          path: dist/
+          retention-days: 7
 
   smoke:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: build
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
         with:
-          go-version-file: go.mod
-      - name: Build test binary
-        run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o dist/lightpanel-linux-amd64 .
+          name: lightpanel-binaries
+          path: dist/
       - name: Local HTTP smoke test
-        run: python3 scripts/smoke.py dist/lightpanel-linux-amd64
+        run: |
+          chmod +x dist/lightpanel-linux-amd64
+          python3 scripts/smoke.py dist/lightpanel-linux-amd64
