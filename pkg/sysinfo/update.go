@@ -96,8 +96,8 @@ func fetchRelease(ctx context.Context, tag string) (*releaseInfo, error) {
 }
 
 // compareVersion returns >0 when the remote tag is newer than the local one.
-// Tags are "vMAJOR.MINOR.PATCH" with an optional -suffix; anything unparseable
-// falls back to string comparison.
+// Tags are dot-separated numeric segments with an optional -suffix; anything
+// unparseable falls back to string comparison.
 func compareVersion(remote, local string) int {
 	norm := func(v string) (parts []int, pre string, ok bool) {
 		v = strings.TrimPrefix(strings.TrimSpace(v), "v")
@@ -118,7 +118,13 @@ func compareVersion(remote, local string) int {
 	if !rok || !lok {
 		return strings.Compare(remote, local)
 	}
-	for i := 0; i < 3; i++ {
+	// Compare every numeric segment, not just the first three: four-segment
+	// tags like v0.1.4.1 must sort above v0.1.4. Missing segments count as 0.
+	n := len(rp)
+	if len(lp) > n {
+		n = len(lp)
+	}
+	for i := 0; i < n; i++ {
 		r, l := 0, 0
 		if i < len(rp) {
 			r = rp[i]

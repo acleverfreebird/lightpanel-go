@@ -27,6 +27,10 @@ func TestCompareVersion(t *testing.T) {
 		{"v1.2.3", "v1.2.3-rc1", 1},
 		{"v1.2.3-rc1", "v1.2.3", -1},
 		{"v1.2.3-rc1", "v1.2.3-rc1", 0},
+		{"v0.1.4.1", "v0.1.4", 1}, // four-segment tags compare on every segment
+		{"v0.1.4", "v0.1.4.1", -1},
+		{"v0.1.4.1", "v0.1.4.1", 0},
+		{"v0.1.4.1", "v0.1.3", 1},
 		{"1.2.3", "v1.2.3", 0},
 		{"v0.9.0", "dev", 1}, // dev falls back to string comparison
 	}

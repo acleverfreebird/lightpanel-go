@@ -219,12 +219,16 @@ func splitLines(text string) []string {
 }
 
 // writeAtomic 先备份原内容到 path.bak，再经同目录临时文件写入并 rename，
-// 权限沿用原文件。中途任何失败都保留原配置文件不动。
+// 权限与属主沿用原文件。中途任何失败都保留原配置文件不动。属主恢复是
+// best-effort：非 root 进程（无 helper 的 root 面板模式）无法 chown 给其他
+// 用户，此时文件归执行进程所有——它本来就有读权限，root 的 helper 之后
+// 每次迁移都会把属主纠正回来。
 func writeAtomic(path string, original, merged []byte) error {
 	mode := os.FileMode(0o600)
 	if st, err := os.Stat(path); err == nil {
 		mode = st.Mode().Perm()
 	}
+	uid, gid, hasOwner := fileOwnerOf(path)
 	if err := os.WriteFile(path+".bak", original, mode); err != nil {
 		return fmt.Errorf("write backup %s.bak: %w", path, err)
 	}
@@ -236,6 +240,9 @@ func writeAtomic(path string, original, merged []byte) error {
 	if err = tmp.Chmod(mode); err != nil {
 		tmp.Close()
 		return err
+	}
+	if hasOwner {
+		_ = tmp.Chown(uid, gid)
 	}
 	if _, err = tmp.Write(merged); err != nil {
 		tmp.Close()
