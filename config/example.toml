@@ -10,6 +10,11 @@ password_hash = ""
 max_upload_mb = 32
 public_origin = "http://127.0.0.1:8888"
 read_only = false
+# allow_public_http = true 时显式允许在非 loopback 地址（如 host = "0.0.0.0"）
+# 上以明文 HTTP 对外提供面板，便于局域网/所有网卡直接访问。公网明文传输会
+# 暴露凭据与会话，生产环境请改用 TLS 或本机反向代理终止 HTTPS。开启后绑定
+# 通配地址且未配置域名 public_origin 时，Host/Origin 校验按实际访问地址放行。
+# allow_public_http = false
 # 在线更新：从 GitHub Releases 检查并下载官方二进制（SHA256 校验后替换）。
 update_repo = "acleverfreebird/lightpanel-go"
 # 直连 GitHub 受限时，可填一个镜像站点源（如 https://ghproxy 家族），留空直连。

@@ -25,11 +25,15 @@ type Config struct {
 	TLSCert      string `toml:"tls_cert"`
 	TLSKey       string `toml:"tls_key"`
 	PublicOrigin string `toml:"public_origin"`
-	LogFile      string `toml:"log_file"`
-	ReadOnly     bool   `toml:"read_only"`
-	MaxUploadMB  int    `toml:"max_upload_mb"`
-	UpdateRepo   string `toml:"update_repo"`
-	UpdateMirror string `toml:"update_mirror"`
+	// AllowPublicHTTP 显式允许在非 loopback 地址（如 0.0.0.0）上以明文 HTTP
+	// 对外提供面板。默认关闭：公网明文传输会暴露凭据与会话，生产环境应改用
+	// TLS 或本机反向代理终止 HTTPS。
+	AllowPublicHTTP bool   `toml:"allow_public_http"`
+	LogFile         string `toml:"log_file"`
+	ReadOnly        bool   `toml:"read_only"`
+	MaxUploadMB     int    `toml:"max_upload_mb"`
+	UpdateRepo      string `toml:"update_repo"`
+	UpdateMirror    string `toml:"update_mirror"`
 
 	// Helper 为空表示不使用最小特权 helper：面板保持旧有行为（root 下直接执行
 	// 特权操作）。配置了 [helper] 且面板以非 root 用户运行时，systemd 服务控制、
@@ -98,6 +102,13 @@ func LoadConfig(path string) (*Config, error) {
 		}
 		c.ReadOnly = b
 	}
+	if v, ok := os.LookupEnv("LP_ALLOW_PUBLIC_HTTP"); ok {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return nil, fmt.Errorf("LP_ALLOW_PUBLIC_HTTP: %w", err)
+		}
+		c.AllowPublicHTTP = b
+	}
 	if v, ok := os.LookupEnv("LP_HELPER_SOCKET"); ok && c.Helper != nil {
 		c.Helper.Socket = v
 	}
@@ -136,8 +147,8 @@ func LoadConfig(path string) (*Config, error) {
 	if (c.TLSCert == "") != (c.TLSKey == "") {
 		return nil, fmt.Errorf("both tls_cert and tls_key required")
 	}
-	if c.TLSCert == "" && !net.ParseIP(c.Host).IsLoopback() {
-		return nil, fmt.Errorf("without local TLS, host must be loopback; terminate HTTPS at a local reverse proxy")
+	if c.TLSCert == "" && !net.ParseIP(c.Host).IsLoopback() && !c.AllowPublicHTTP {
+		return nil, fmt.Errorf("without local TLS, host must be loopback; terminate HTTPS at a local reverse proxy or set allow_public_http = true to accept plaintext HTTP")
 	}
 	if c.PublicOrigin == "" {
 		scheme := "http"
@@ -150,8 +161,8 @@ func LoadConfig(path string) (*Config, error) {
 	if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Path != "" || (u.Scheme != "https" && u.Scheme != "http") {
 		return nil, fmt.Errorf("public_origin must be http(s)://host[:port], without trailing slash")
 	}
-	if u.Scheme == "http" && (!net.ParseIP(c.Host).IsLoopback() || !isLoopback(u.Hostname())) {
-		return nil, fmt.Errorf("non-loopback access requires an HTTPS public_origin and TLS or a trusted reverse proxy")
+	if u.Scheme == "http" && !c.AllowPublicHTTP && (!net.ParseIP(c.Host).IsLoopback() || !isLoopback(u.Hostname())) {
+		return nil, fmt.Errorf("non-loopback access requires an HTTPS public_origin and TLS or a trusted reverse proxy (or allow_public_http = true)")
 	}
 	if c.TLSCert != "" && u.Scheme != "https" {
 		return nil, fmt.Errorf("TLS requires HTTPS public_origin")
@@ -189,3 +200,24 @@ func validateHelper(h *HelperConfig) error {
 }
 
 func isLoopback(host string) bool { return host == "localhost" || net.ParseIP(host).IsLoopback() }
+
+// WildcardOrigin 报告 public_origin 的主机部分是否为未指定地址（0.0.0.0/::），
+// 即面板绑定通配地址且管理员未配置域名 origin。此时浏览器经由实际 IP 访问，
+// Host/Origin 校验改为按请求自身的 Host 放行（server.go 与 pkg/auth 共用）；
+// 配置了具体域名或 IP 的 public_origin 时保持严格相等校验。
+func (c *Config) WildcardOrigin() bool {
+	u, err := url.Parse(c.PublicOrigin)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	ip := net.ParseIP(u.Hostname())
+	return ip != nil && ip.IsUnspecified()
+}
+
+// WildcardScheme 返回通配 origin 下的 URL scheme，用于核对 Origin/Referer。
+func (c *Config) WildcardScheme() string {
+	if u, err := url.Parse(c.PublicOrigin); err == nil && (u.Scheme == "http" || u.Scheme == "https") {
+		return u.Scheme
+	}
+	return "http"
+}

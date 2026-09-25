@@ -241,13 +241,13 @@ ssh -N -L 8888:127.0.0.1:8888 user@your-server
 
 仍在本地打开 `http://127.0.0.1:8888`，保持与 `public_origin` 相同。不要用 `localhost` 替代 `127.0.0.1`，除非同时修改配置。
 
-TOML 是可选外部文件：不传 `-c` 时只用安全默认值和环境变量。全部支持覆盖：`LP_HOST`、`LP_PORT`、`LP_ADMIN_USER`、`LP_PASS_HASH`、`LP_TLS_CERT`、`LP_TLS_KEY`、`LP_PUBLIC_ORIGIN`、`LP_LOG_FILE`、`LP_READ_ONLY`、`LP_MAX_UPLOAD_MB`（1..2048，默认 32）、`LP_UPDATE_REPO`（默认 `acleverfreebird/lightpanel-go`）、`LP_UPDATE_MIRROR`（http(s) 源，留空直连 GitHub）、`LP_HELPER_SOCKET`（已配置 `[helper]` 段时覆盖 socket 路径）。`sandbox_root` 配置项已废弃（文件管理现为全盘访问），旧配置文件中的该字段会被忽略。生产配置/哈希/私钥应仅允许运行账号读取。
+TOML 是可选外部文件：不传 `-c` 时只用安全默认值和环境变量。全部支持覆盖：`LP_HOST`、`LP_PORT`、`LP_ADMIN_USER`、`LP_PASS_HASH`、`LP_TLS_CERT`、`LP_TLS_KEY`、`LP_PUBLIC_ORIGIN`、`LP_LOG_FILE`、`LP_READ_ONLY`、`LP_ALLOW_PUBLIC_HTTP`、`LP_MAX_UPLOAD_MB`（1..2048，默认 32）、`LP_UPDATE_REPO`（默认 `acleverfreebird/lightpanel-go`）、`LP_UPDATE_MIRROR`（http(s) 源，留空直连 GitHub）、`LP_HELPER_SOCKET`（已配置 `[helper]` 段时覆盖 socket 路径）。`sandbox_root` 配置项已废弃（文件管理现为全盘访问），旧配置文件中的该字段会被忽略。生产配置/哈希/私钥应仅允许运行账号读取。
 
 ### HTTPS 与反向代理
 
 直接 TLS：设置 `tls_cert`、`tls_key` 为 PEM 路径、`public_origin="https://panel.example.com:8888"`。需要公网监听时另外设置 `host="0.0.0.0"`。证书续期后重启面板加载；本版不内置 ACME，证书可由现有反代/证书工具管理。
 
-反代 TLS：后端仍监听 `127.0.0.1:8888`，TLS 两项留空，`public_origin="https://panel.example.com"`。无本地证书时**强制只允许 loopback 监听**。Nginx HTTPS server 内示例：
+反代 TLS：后端仍监听 `127.0.0.1:8888`，TLS 两项留空，`public_origin="https://panel.example.com"`。无本地证书时默认**强制只允许 loopback 监听**；确需明文 HTTP 对外（如局域网直接访问）可显式设置 `allow_public_http = true`（或环境变量 `LP_ALLOW_PUBLIC_HTTP`），并配合 `host="0.0.0.0"` 监听所有网卡。公网明文传输会暴露凭据与会话，仅建议在可信内网使用；生产环境仍应使用 TLS 或反向代理。绑定 `0.0.0.0` 且未配置域名 `public_origin` 时，浏览器经由实际 IP 访问，Host/Origin 校验按请求自身的 Host 放行（跨站请求仍被 Origin/Referer 与 CSRF token 拦截）；若配置了具体域名/IP 的 `public_origin`，则维持严格 Host 校验，只能经该 origin 访问。Nginx HTTPS server 内示例：
 
 ```nginx
 location / {

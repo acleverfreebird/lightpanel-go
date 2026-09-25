@@ -28,6 +28,15 @@ func testPanel(t *testing.T, readOnly bool) (http.Handler, *config.Config) {
 		t.Fatal(err)
 	}
 	cfg := &config.Config{AdminUser: "admin", PasswordHash: string(hash), PublicOrigin: "http://localhost", ReadOnly: readOnly}
+	h, err := panelWithConfig(t, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return h, cfg
+}
+
+func panelWithConfig(t *testing.T, cfg *config.Config) (http.Handler, error) {
+	t.Helper()
 	files, err := sysinfo.NewFiles(sysinfo.MaxUpload)
 	if err != nil {
 		t.Fatal(err)
@@ -36,11 +45,7 @@ func testPanel(t *testing.T, readOnly bool) (http.Handler, *config.Config) {
 	manager := &sysinfo.Manager{Run: func(ctx context.Context, name string, args ...string) (string, error) {
 		return name + " " + strings.Join(args, " "), nil
 	}}
-	h, err := newHandler(cfg, files, manager)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return h, cfg
+	return newHandler(cfg, files, manager)
 }
 func request(h http.Handler, method, path, body string, cookie *http.Cookie, csrf string) *httptest.ResponseRecorder {
 	r := httptest.NewRequest(method, "http://localhost"+path, strings.NewReader(body))
@@ -151,6 +156,67 @@ func TestReadOnlyAndOrigin(t *testing.T) {
 	h.ServeHTTP(w, r)
 	if w.Code != 403 {
 		t.Fatal("host rebinding")
+	}
+}
+
+func hostRequest(h http.Handler, method, target, host, body, origin string, cookie *http.Cookie) *httptest.ResponseRecorder {
+	r := httptest.NewRequest(method, "http://dummy.local"+target, strings.NewReader(body))
+	r.Host = host
+	if origin != "" {
+		r.Header.Set("Origin", origin)
+	}
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if cookie != nil {
+		r.AddCookie(cookie)
+	}
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	return w
+}
+
+func TestWildcardHostAccess(t *testing.T) {
+	hash, err := bcrypt.GenerateFromPassword([]byte("testing-password-long"), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{AdminUser: "admin", PasswordHash: string(hash), Host: "0.0.0.0", Port: 8888, PublicOrigin: "http://0.0.0.0:8888"}
+	if !cfg.WildcardOrigin() {
+		t.Fatal("wildcard origin not detected")
+	}
+	h, err := panelWithConfig(t, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ip := "192.168.1.5:8888"
+	if w := hostRequest(h, "GET", "/", ip, "", "", nil); w.Code == 403 {
+		t.Fatalf("access via real IP rejected: %d", w.Code)
+	}
+	if w := hostRequest(h, "POST", "/login", ip, "username=admin&password=testing-password-long", "http://evil.example", nil); w.Code != 403 {
+		t.Fatal("cross-origin login accepted")
+	}
+	w := hostRequest(h, "POST", "/login", ip, "username=admin&password=testing-password-long", "http://"+ip, nil)
+	if w.Code != 303 {
+		t.Fatalf("login via IP: %d %s", w.Code, w.Body.String())
+	}
+	c := w.Result().Cookies()[0]
+	for _, bad := range []string{"", "evil.com/x", "a@b", "x?y"} {
+		if w := hostRequest(h, "GET", "/", bad, "", "", nil); w.Code != 403 {
+			t.Fatalf("malformed host %q accepted: %d", bad, w.Code)
+		}
+	}
+	w = hostRequest(h, "GET", "/", ip, "", "", c)
+	if w.Code != 200 {
+		t.Fatalf("index via IP: %d", w.Code)
+	}
+	csrf := regexp.MustCompile(`name="csrf-token" content="([a-f0-9]+)"`).FindStringSubmatch(w.Body.String())
+	if len(csrf) != 2 {
+		t.Fatal("missing csrf meta")
+	}
+	if w := hostRequest(h, "POST", "/logout", ip, "csrf="+csrf[1], "http://evil.example", c); w.Code != 403 {
+		t.Fatal("cross-origin logout accepted")
+	}
+	if w := hostRequest(h, "POST", "/logout", ip, "csrf="+csrf[1], "http://"+ip, c); w.Code != 303 {
+		t.Fatalf("logout via IP: %d %s", w.Code, w.Body.String())
 	}
 }
 func TestTemplateEscaping(t *testing.T) {

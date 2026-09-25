@@ -32,6 +32,19 @@ func TestConfigFailsClosed(t *testing.T) {
 	if _, err := LoadConfig(""); err == nil {
 		t.Fatal("public plaintext reverse-proxy backend allowed")
 	}
+	t.Setenv("LP_PUBLIC_ORIGIN", "")
+	t.Setenv("LP_ALLOW_PUBLIC_HTTP", "oops")
+	if _, err := LoadConfig(""); err == nil {
+		t.Fatal("invalid allow_public_http accepted")
+	}
+	t.Setenv("LP_ALLOW_PUBLIC_HTTP", "true")
+	c, err = LoadConfig("")
+	if err != nil {
+		t.Fatalf("allow_public_http with 0.0.0.0 rejected: %v", err)
+	}
+	if !c.WildcardOrigin() || c.WildcardScheme() != "http" {
+		t.Fatalf("wildcard origin not detected: %+v", c)
+	}
 	t.Setenv("LP_HOST", "127.0.0.1")
 	if _, err := LoadConfig(""); err != nil {
 		t.Fatal(err)

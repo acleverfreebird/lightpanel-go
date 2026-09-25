@@ -54,6 +54,9 @@ func clientIP(r *http.Request) string {
 	return h
 }
 func (a *Auth) sameOrigin(r *http.Request) bool {
+	if a.cfg.WildcardOrigin() {
+		return a.sameOriginWildcard(r)
+	}
 	if r.Host != mustHost(a.cfg.PublicOrigin) {
 		return false
 	}
@@ -62,6 +65,21 @@ func (a *Auth) sameOrigin(r *http.Request) bool {
 	}
 	u, err := url.Parse(r.Header.Get("Referer"))
 	return err == nil && u.Scheme+"://"+u.Host == a.cfg.PublicOrigin
+}
+
+// sameOriginWildcard 服务于绑定 0.0.0.0/:: 且未配置域名 origin 的场景：浏览器
+// 经由实际 IP 访问，Origin/Referer 无法与固定值比较，改为要求其与请求自身的
+// Host（及 scheme）一致，跨站请求仍被拒绝；CSRF token 校验不变。
+func (a *Auth) sameOriginWildcard(r *http.Request) bool {
+	if r.Host == "" || strings.ContainsAny(r.Host, "/?#@") {
+		return false
+	}
+	scheme := a.cfg.WildcardScheme()
+	if o := r.Header.Get("Origin"); o != "" {
+		return o == scheme+"://"+r.Host
+	}
+	u, err := url.Parse(r.Header.Get("Referer"))
+	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host == r.Host
 }
 func mustHost(origin string) string {
 	u, _ := url.Parse(origin)

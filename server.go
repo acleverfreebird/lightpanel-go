@@ -153,7 +153,15 @@ func security(cfg *config.Config, uploadLimit int64, next http.Handler) http.Han
 		if origin.Scheme == "https" {
 			w.Header().Set("Strict-Transport-Security", "max-age=31536000")
 		}
-		if r.Host != origin.Host {
+		if cfg.WildcardOrigin() {
+			// 绑定 0.0.0.0/:: 时浏览器经由实际 IP 访问，Host 不固定：接受任意
+			// 形式合法的 Host 头（防请求走私/注入），DNS rebinding 防护由
+			// Origin/Referer 与 CSRF token 承担。
+			if r.Host == "" || strings.ContainsAny(r.Host, "/?#@") {
+				http.Error(sw, "unrecognized host", 403)
+				return
+			}
+		} else if r.Host != origin.Host {
 			http.Error(sw, "unrecognized host", 403)
 			return
 		}
