@@ -42,14 +42,23 @@ func TestAppInstallSteps(t *testing.T) {
 			{Args: []string{"apt-get", "-o", aptSandboxOpt, "install", "-y", "nginx"}},
 		}},
 		{"apt-get", "mysql", []Step{
+			{Args: []string{"sh", "-c", mysqlConfigOverrideScript}},
 			{Args: []string{"dpkg", "--configure", "-a"}, Optional: true},
 			{Args: []string{"apt-get", "-o", aptSandboxOpt, "update"}, Optional: true},
 			{Args: []string{"apt-get", "-o", aptSandboxOpt, "install", "-y", "mysql-server"}},
+			{Args: []string{"sh", "-c", mysqlDatadirInitScript}},
+			{Args: []string{"sh", "-c", mysqlUnitPatchScript}},
 		}},
 		{"apt-get", "apache", []Step{
 			{Args: []string{"dpkg", "--configure", "-a"}, Optional: true},
 			{Args: []string{"apt-get", "-o", aptSandboxOpt, "update"}, Optional: true},
 			{Args: []string{"apt-get", "-o", aptSandboxOpt, "install", "-y", "apache2"}},
+		}},
+		// Only mysql gets the unprivileged-container fixups.
+		{"apt-get", "mariadb", []Step{
+			{Args: []string{"dpkg", "--configure", "-a"}, Optional: true},
+			{Args: []string{"apt-get", "-o", aptSandboxOpt, "update"}, Optional: true},
+			{Args: []string{"apt-get", "-o", aptSandboxOpt, "install", "-y", "mariadb-server"}},
 		}},
 		{"apt-get", "docker", []Step{
 			{Args: []string{"dpkg", "--configure", "-a"}, Optional: true},

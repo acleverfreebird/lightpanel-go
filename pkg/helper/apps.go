@@ -103,6 +103,59 @@ func ValidPackageManager(manager string) bool {
 // which fails with "seteuid 42 failed" in containers lacking CAP_SETUID.
 const aptSandboxOpt = "APT::Sandbox::User=root"
 
+// The mysql fixups below exist for the same class of hosts as aptSandboxOpt:
+// containers without CAP_SETUID, where nothing may drop privileges. The
+// mysql-server package is unusable there out of the box — its mysqld.cnf
+// sets user = mysql, so every root-invoked mysqld (the postinst's startup
+// test, the datadir initialization, the service) calls setuid(2) to the
+// mysql user and dies with "setuid: Operation not permitted", leaving dpkg
+// half-configured. mysqld itself handles running as root cleanly: its
+// check_user() (sql/mysqld.cc) skips all privilege changes when the user
+// option is "root" and merely warns and ignores it when not started as root,
+// so pointing it at root breaks nothing else.
+//
+// All three fixup scripts begin by probing whether privilege dropping works
+// at all (su to nobody). On ordinary hosts the probe succeeds, the script is
+// a no-op and the stock mysql layout is left untouched; only hosts where the
+// probe fails — and the stock layout cannot work — are patched.
+
+// mysqlPrivDropProbe succeeds only where setuid(2) is possible at all; on
+// such hosts none of the mysql fixups may apply.
+const mysqlPrivDropProbe = `su -s /bin/sh nobody -c true >/dev/null 2>&1 && exit 0; `
+
+// mysqlConfigOverrideScript makes mysqld run as root when it is started as
+// root. The override sorts after the packaged mysql.conf.d/mysqld.cnf so its
+// user = mysql loses; that lets the package's own postinst startup test and
+// any root-started mysqld get past the setuid drop, which un-wedges dpkg and
+// makes future package upgrades configure cleanly too.
+const mysqlConfigOverrideScript = mysqlPrivDropProbe + `
+mkdir -p /etc/mysql/mysql.conf.d
+printf '[mysqld]\nuser = root\n' > /etc/mysql/mysql.conf.d/zz-lightpanel.cnf
+`
+
+// mysqlDatadirInitScript initializes the system tables when the package's
+// own init could not (its "mysqld --initialize-insecure --user=mysql" is
+// swallowed by "|| true" on these hosts, leaving an empty datadir behind).
+// Root-created files are handed back to mysql so they match the layout the
+// package expects.
+const mysqlDatadirInitScript = `if [ ! -d /var/lib/mysql/mysql ]; then
+	mysqld --initialize-insecure --user=root &&
+	chown -R mysql:mysql /var/lib/mysql
+fi
+`
+
+// mysqlUnitPatchScript switches the service unit from User/Group=mysql to
+// root so systemd's own setuid (equally unavailable there) does not stop the
+// panel from starting MySQL.
+const mysqlUnitPatchScript = mysqlPrivDropProbe + `
+for f in /lib/systemd/system/mysql.service /usr/lib/systemd/system/mysql.service; do
+	if [ -f "$f" ]; then
+		sed -i -e 's/^User=mysql.*/User=root/' -e 's/^Group=mysql.*/Group=root/' "$f"
+	fi
+done
+systemctl daemon-reload >/dev/null 2>&1 || true
+`
+
 // Step is one whitelisted command in an install or removal sequence.
 // Optional steps are housekeeping whose failure does not abort the job —
 // package-manager output is still captured — while a required step's failure
@@ -117,8 +170,10 @@ type Step struct {
 // apt runs `dpkg --configure -a` first so an interrupted earlier install (the
 // usual way MySQL leaves a half-configured dpkg behind) cannot wedge the new
 // one, then refreshes the package lists (a stale list is the most common
-// reason a fresh install fails). Nothing here accepts panel-supplied strings
-// beyond the app key, and the package name always comes from this catalog.
+// reason a fresh install fails). MySQL additionally gets the unprivileged-
+// container fixups defined above the install/remove builders. Nothing here
+// accepts panel-supplied strings beyond the app key, and the package name
+// always comes from this catalog.
 func AppInstallSteps(manager, app string) ([]Step, error) {
 	pkg, err := lookupAppPackage(manager, app)
 	if err != nil {
@@ -129,11 +184,26 @@ func AppInstallSteps(manager, app string) ([]Step, error) {
 		// APT::Sandbox::User=root stops apt from dropping privileges to the
 		// _apt user (uid 42) for downloads; in unprivileged containers
 		// (no CAP_SETUID) that seteuid fails and every fetch method dies.
-		return []Step{
+		steps := []Step{
 			{Args: []string{"dpkg", "--configure", "-a"}, Optional: true},
 			{Args: []string{"apt-get", "-o", aptSandboxOpt, "update"}, Optional: true},
 			{Args: []string{"apt-get", "-o", aptSandboxOpt, "install", "-y", pkg}},
-		}, nil
+		}
+		if app == "mysql" {
+			// The config override goes first so the leading dpkg repair and
+			// the install's postinst both see a mysqld that can start; the
+			// datadir init and unit patch repair whatever the package's own
+			// scripts had to skip (their --user=mysql calls fail silently
+			// there). See the mysql fixup scripts above for why.
+			steps = append([]Step{
+				{Args: []string{"sh", "-c", mysqlConfigOverrideScript}},
+			}, steps...)
+			steps = append(steps,
+				Step{Args: []string{"sh", "-c", mysqlDatadirInitScript}},
+				Step{Args: []string{"sh", "-c", mysqlUnitPatchScript}},
+			)
+		}
+		return steps, nil
 	case "dnf", "yum":
 		return []Step{{Args: []string{manager, "install", "-y", pkg}}}, nil
 	case "zypper":
