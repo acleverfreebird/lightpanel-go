@@ -238,7 +238,7 @@ func TestCreateDockerSiteCommand(t *testing.T) {
 			return "abc123\n", nil
 		},
 	}
-	if err := m.createDockerSite(context.Background(), "blog", "nginx:1.27", 8080, 80); err != nil {
+	if err := m.createDockerSite(context.Background(), "blog", "nginx:1.27", 8080, 80, nil); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{"run", "-d", "--name", "lightpanel-blog", "--restart", "unless-stopped",
@@ -253,7 +253,7 @@ func TestCreateDockerSiteCommand(t *testing.T) {
 		}
 		return "", nil
 	}
-	if err := m.createDockerSite(context.Background(), "blog", "nginx", 80, 80); !errors.Is(err, errConflict) {
+	if err := m.createDockerSite(context.Background(), "blog", "nginx", 80, 80, nil); !errors.Is(err, errConflict) {
 		t.Fatalf("expected conflict, got %v", err)
 	}
 }
@@ -394,7 +394,7 @@ func TestCreateNativeSiteRoutesThroughHelper(t *testing.T) {
 	}
 	m := &SiteManager{Run: func(context.Context, string, ...string) (string, error) { return "", nil },
 		RunTimeout: func(context.Context, time.Duration, string, ...string) (string, error) { return "", nil }}
-	if err := m.createNativeSite(context.Background(), "nginx", "proxy", "app", "app.example.com", 8080, "", "http://127.0.0.1:3000"); err != nil {
+	if err := m.createNativeSite(context.Background(), "nginx", "proxy", "app", "app.example.com", 8080, "", "http://127.0.0.1:3000", nil); err != nil {
 		t.Fatalf("helper-routed create failed: %v", err)
 	}
 	if got.Op != helper.OpSite || got.Action != "create" || got.Kind != "proxy" || got.Site != "app" ||
@@ -405,7 +405,7 @@ func TestCreateNativeSiteRoutesThroughHelper(t *testing.T) {
 	PrivilegedCall = func(_ context.Context, _ helper.Request) (string, error) {
 		return "", errors.New("helper operation failed: a site with this name already exists")
 	}
-	if err := m.createNativeSite(context.Background(), "nginx", "static", "blog", "", 80, "", ""); !errors.Is(err, errConflict) {
+	if err := m.createNativeSite(context.Background(), "nginx", "static", "blog", "", 80, "", "", nil); !errors.Is(err, errConflict) {
 		t.Fatalf("conflict not mapped: %v", err)
 	}
 }

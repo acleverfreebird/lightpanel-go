@@ -575,7 +575,10 @@ func (m *SiteManager) reloadEngine(ctx context.Context, engine string) (string, 
 // createNativeSite writes the site configuration either through the helper
 // (least-privilege mode: the helper re-validates and re-renders everything)
 // or directly with the panel's own privileges (root mode).
-func (m *SiteManager) createNativeSite(ctx context.Context, engine, kind, name, domain string, port int, root, proxyTarget string) error {
+func (m *SiteManager) createNativeSite(ctx context.Context, engine, kind, name, domain string, port int, root, proxyTarget string, appendOut func(string)) error {
+	if appendOut == nil {
+		appendOut = func(string) {}
+	}
 	if kind == "" {
 		kind = "static"
 	}
@@ -587,10 +590,11 @@ func (m *SiteManager) createNativeSite(ctx context.Context, engine, kind, name, 
 		Domain: domain, Port: strconv.Itoa(port), Root: root, ProxyTarget: proxyTarget,
 	}); routed {
 		if err != nil {
+			appendOut(helper.TrimOutput(out))
 			if strings.Contains(err.Error(), "already exists") {
 				return errConflict
 			}
-			return fmt.Errorf("%w\n%s", err, helper.TrimOutput(out))
+			return fmt.Errorf("site create failed: %w", err)
 		}
 		return nil
 	}
@@ -650,7 +654,10 @@ func (m *SiteManager) createNativeSite(ctx context.Context, engine, kind, name, 
 
 var errConflict = errors.New("already exists")
 
-func (m *SiteManager) createDockerSite(ctx context.Context, name, image string, port, containerPort int) error {
+func (m *SiteManager) createDockerSite(ctx context.Context, name, image string, port, containerPort int, appendOut func(string)) error {
+	if appendOut == nil {
+		appendOut = func(string) {}
+	}
 	out, err := m.Run(ctx, "docker", "ps", "-a", "--filter", "name=^lightpanel-"+name+"$", "--format", "{{.Names}}")
 	if err != nil {
 		return err
@@ -663,7 +670,8 @@ func (m *SiteManager) createDockerSite(ctx context.Context, name, image string, 
 	args = append(args, image)
 	out, err = m.RunTimeout(ctx, 240*time.Second, "docker", args...)
 	if err != nil {
-		return fmt.Errorf("%w\n%s", err, helper.TrimOutput(out))
+		appendOut(helper.TrimOutput(out))
+		return fmt.Errorf("container start failed: %w", err)
 	}
 	return nil
 }
@@ -713,13 +721,15 @@ func (m *SiteManager) SiteCreate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "engine must be auto, nginx, apache or docker", 400)
 		return
 	}
+	kind, root, proxyTarget, image := "static", "", "", ""
+	containerPort := 80
 	switch engine {
 	case "nginx", "apache":
-		kind := r.FormValue("mode")
+		kind = r.FormValue("mode")
 		if kind == "" {
 			kind = "static"
 		}
-		proxyTarget := strings.TrimSpace(r.FormValue("proxy_target"))
+		proxyTarget = strings.TrimSpace(r.FormValue("proxy_target"))
 		if kind == "proxy" {
 			if !helper.ValidProxyTarget(proxyTarget) {
 				http.Error(w, "proxy target must be http(s)://host[:port][/path]", 400)
@@ -729,19 +739,10 @@ func (m *SiteManager) SiteCreate(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "mode must be static or proxy", 400)
 			return
 		}
-		root := strings.TrimSpace(r.FormValue("root"))
-		if err := m.createNativeSite(ctx, engine, kind, name, domain, port, root, proxyTarget); err != nil {
-			if errors.Is(err, errConflict) {
-				http.Error(w, "a site with this name already exists", 409)
-				return
-			}
-			commandError(w, "", err)
-			return
-		}
-		JSON(w, map[string]string{"message": "site created and " + engine + " reloaded", "root": defaultRoot(root, name), "engine": engine})
+		root = strings.TrimSpace(r.FormValue("root"))
 	case "docker":
-		image := strings.TrimSpace(r.FormValue("image"))
-		containerPort, err := strconv.Atoi(r.FormValue("container_port"))
+		image = strings.TrimSpace(r.FormValue("image"))
+		containerPort, err = strconv.Atoi(r.FormValue("container_port"))
 		if err != nil || containerPort == 0 {
 			containerPort = 80
 		}
@@ -749,23 +750,29 @@ func (m *SiteManager) SiteCreate(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid image reference or container port (1..65535)", 400)
 			return
 		}
-		if err := m.createDockerSite(ctx, name, image, port, containerPort); err != nil {
-			if errors.Is(err, errConflict) {
-				http.Error(w, "a site with this name already exists", 409)
-				return
-			}
-			commandError(w, "", err)
-			return
+	}
+	// Creation runs as a task-center task: Docker deployments may pull an
+	// image for minutes, which would otherwise hit the server's write
+	// timeout. "Already exists" conflicts therefore surface as task errors
+	// instead of an immediate 409.
+	tasks := m.TaskCenter()
+	if tasks.Running("site-create", name) {
+		http.Error(w, "a site with this name is already being created", 409)
+		return
+	}
+	task := tasks.Start("site-create", name, "创建站点 "+name, func(ctx context.Context, appendOut func(string)) error {
+		if engine == "docker" {
+			cctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+			defer cancel()
+			return m.createDockerSite(cctx, name, image, port, containerPort, appendOut)
 		}
-		JSON(w, map[string]string{"message": "container started", "container": "lightpanel-" + name, "engine": "docker"})
-	}
-}
-
-func defaultRoot(root, name string) string {
-	if root == "" {
-		return "/var/www/" + name
-	}
-	return root
+		if err := m.createNativeSite(ctx, engine, kind, name, domain, port, root, proxyTarget, appendOut); err != nil {
+			return err
+		}
+		appendOut(fmt.Sprintf("站点 %s 已创建，%s 配置已重载。", name, engine))
+		return nil
+	})
+	JSON(w, map[string]string{"message": "site creation started", "task_id": task.ID})
 }
 
 // ---- site actions ----

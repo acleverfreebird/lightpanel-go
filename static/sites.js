@@ -172,15 +172,23 @@ export function setupSites(navigate) {
     if (event.detail.state !== 'done') certsLoaded = false;
     else loadCerts().then(() => message(`${event.detail.title}完成，站点已启用 HTTPS。`)).catch(() => {});
   });
+  window.addEventListener('task-finished', event => {
+    if (event.detail?.kind !== 'site-create') return;
+    message(event.detail.state === 'done'
+      ? `${event.detail.title}完成。`
+      : `${event.detail.title}失败，详情见任务中心。`, event.detail.state !== 'done');
+    sites().catch(() => {});
+  });
   $('#site-form').addEventListener('submit', guard(async () => {
     const data = Object.fromEntries(new FormData($('#site-form')));
     if (data.engine === 'docker' && !data.image?.trim()) throw new Error('Docker 部署需要填写镜像名称。');
     if (data.engine !== 'docker' && data.mode === 'proxy' && !data.proxy_target?.trim()) throw new Error('反向代理站点需要填写反代目标。');
     if (readOnly) throw new Error('当前为只读模式，不能修改服务器。');
-    await mutate('/api/sites/create', data);
+    const result = await mutate('/api/sites/create', data);
     $('#site-create-panel').open = false;
     $('#site-form').reset();
     syncForm();
+    if (result?.task_id) openTaskCenter(result.task_id);
     await sites();
   }));
   syncForm();
