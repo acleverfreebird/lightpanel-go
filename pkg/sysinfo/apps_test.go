@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -59,10 +60,19 @@ func TestAppInstallRejectsUnknownApp(t *testing.T) {
 func TestAppInstallSingleSlot(t *testing.T) {
 	block := make(chan struct{})
 	ran := make(chan struct{}, 1)
+	// Answer detection probes fast, park only on the real apt-get install
+	// step — the handler now probes installed state synchronously, so a stub
+	// that parks every call would deadlock its own conflict check.
 	m := appsTestManager(func(ctx context.Context, name string, args ...string) (string, error) {
-		ran <- struct{}{}
-		<-block
-		return "", errors.New("aborted")
+		if name == "apt-get" && slices.Contains(args, "install") {
+			ran <- struct{}{}
+			<-block
+			return "", errors.New("aborted")
+		}
+		if len(args) > 0 && args[0] == "--version" {
+			return "stub", nil
+		}
+		return "", ErrUnavailable
 	})
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("POST", "/api/apps/install", strings.NewReader(url.Values{"name": {"nginx"}}.Encode()))
@@ -87,7 +97,96 @@ func TestAppInstallStepsRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(steps) != 2 || steps[1][0] != "apt-get" || steps[1][3] != "install" || steps[1][5] != "nginx" {
+	if len(steps) != 3 ||
+		steps[2].Args[0] != "apt-get" || steps[2].Args[3] != "install" || steps[2].Args[5] != "nginx" ||
+		!steps[0].Optional || !steps[1].Optional || steps[2].Optional {
 		t.Fatalf("unexpected apt-get steps: %v", steps)
+	}
+}
+
+func TestAppInstallBlockedByGroupConflict(t *testing.T) {
+	// Apache answers its probe; nginx does not. Installing nginx must be
+	// rejected because the two web servers share one catalog group.
+	m := appsTestManager(func(ctx context.Context, name string, args ...string) (string, error) {
+		if name == "apache2ctl" {
+			return "Server version: Apache/2.4.62", nil
+		}
+		return "", ErrUnavailable
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/apps/install", strings.NewReader(url.Values{"name": {"nginx"}}.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	m.AppInstall(rec, req)
+	if rec.Code != 409 {
+		t.Fatalf("install blocked by group conflict status = %d, want 409", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "Apache") {
+		t.Errorf("conflict message should name the installed blocker: %s", rec.Body.String())
+	}
+}
+
+func TestAppRemoveRejectsUnknownApp(t *testing.T) {
+	m := appsTestManager(func(context.Context, string, ...string) (string, error) { return "", ErrUnavailable })
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/apps/remove", strings.NewReader(url.Values{"name": {"nginx; rm -rf /"}}.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	m.AppRemove(rec, req)
+	if rec.Code != 400 {
+		t.Fatalf("unknown app remove status = %d, want 400", rec.Code)
+	}
+}
+
+func TestAppRemoveRunsAsTask(t *testing.T) {
+	block := make(chan struct{})
+	ran := make(chan struct{}, 1)
+	// Like TestAppInstallSingleSlot: detection probes answer fast, only the
+	// real apt-get purge step parks.
+	m := appsTestManager(func(ctx context.Context, name string, args ...string) (string, error) {
+		if name == "apt-get" && slices.Contains(args, "purge") {
+			ran <- struct{}{}
+			<-block
+			return "purged", nil
+		}
+		if len(args) > 0 && args[0] == "--version" {
+			return "stub", nil
+		}
+		return "", ErrUnavailable
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/apps/remove", strings.NewReader(url.Values{"name": {"nginx"}}.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	m.AppRemove(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("remove status = %d, want 200", rec.Code)
+	}
+	<-ran // the job reached the runner and is now parked
+	// While the remove job is parked in the registry, both another remove and
+	// an install of the same app must be rejected.
+	req2 := httptest.NewRequest("POST", "/api/apps/remove", strings.NewReader(url.Values{"name": {"nginx"}}.Encode()))
+	req2.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec2 := httptest.NewRecorder()
+	m.AppRemove(rec2, req2)
+	if rec2.Code != 409 {
+		t.Fatalf("concurrent remove status = %d, want 409", rec2.Code)
+	}
+	req3 := httptest.NewRequest("POST", "/api/apps/install", strings.NewReader(url.Values{"name": {"nginx"}}.Encode()))
+	req3.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec3 := httptest.NewRecorder()
+	m.AppInstall(rec3, req3)
+	if rec3.Code != 409 {
+		t.Fatalf("concurrent install status = %d, want 409", rec3.Code)
+	}
+	close(block)
+}
+
+func TestAppRemoveStepsRoundTrip(t *testing.T) {
+	steps, err := helper.AppRemoveSteps("apt-get", "nginx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(steps) != 3 ||
+		steps[1].Args[0] != "apt-get" || steps[1].Args[3] != "purge" || steps[1].Args[5] != "nginx" ||
+		steps[1].Optional || !steps[2].Optional {
+		t.Fatalf("unexpected apt-get remove steps: %v", steps)
 	}
 }

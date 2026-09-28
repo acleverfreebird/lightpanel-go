@@ -6,25 +6,30 @@ import (
 
 // The app store: a fixed catalog of server software installable through the
 // system package manager. Both the panel and the helper compile this file, so
-// they agree on the app keys and on the exact argv built for an install — the
-// panel only ever sends the app name and the helper recomputes every argument.
+// they agree on the app keys and on the exact argv built for an install or a
+// removal — the panel only ever sends the app name and the helper recomputes
+// every argument.
 
 // AppSpec is one installable application. Packages maps a package manager
 // binary (see PackageManagerBinaries) to the distro-specific package name.
+// Group names an exclusion class: at most one app per group can be installed
+// at a time (the two web servers fight over ports 80/443 and the site
+// configuration in sites.go targets exactly one engine).
 type AppSpec struct {
 	Name        string
 	Title       string
 	Description string
+	Group       string
 	Packages    map[string]string
 }
 
 // AppCatalog is the installable app list, in display order. Only keys
 // accepted by ValidAppName may appear here.
 var AppCatalog = []AppSpec{
-	{Name: "nginx", Title: "Nginx", Description: "高性能网页服务器与反向代理，站点管理首选引擎", Packages: map[string]string{
+	{Name: "nginx", Title: "Nginx", Group: "web", Description: "高性能网页服务器与反向代理，站点管理首选引擎", Packages: map[string]string{
 		"apt-get": "nginx", "dnf": "nginx", "yum": "nginx", "zypper": "nginx", "apk": "nginx",
 	}},
-	{Name: "apache", Title: "Apache", Description: "Apache HTTP 服务器（Debian 系为 apache2，RHEL 系为 httpd）", Packages: map[string]string{
+	{Name: "apache", Title: "Apache", Group: "web", Description: "Apache HTTP 服务器（Debian 系为 apache2，RHEL 系为 httpd）", Packages: map[string]string{
 		"apt-get": "apache2", "dnf": "httpd", "yum": "httpd", "zypper": "apache2", "apk": "apache2",
 	}},
 	{Name: "docker", Title: "Docker", Description: "容器运行时，用于以容器方式部署站点与应用", Packages: map[string]string{
@@ -68,6 +73,21 @@ func ValidAppName(name string) bool {
 	return ok
 }
 
+// AppGroupConflict returns the name of an already installed app that blocks
+// installing app (same catalog group), or "" when app may be installed.
+func AppGroupConflict(app string, installed map[string]bool) string {
+	spec, ok := AppSpecByName(app)
+	if !ok || spec.Group == "" {
+		return ""
+	}
+	for _, other := range AppCatalog {
+		if other.Name != app && other.Group == spec.Group && installed[other.Name] {
+			return other.Name
+		}
+	}
+	return ""
+}
+
 // ValidPackageManager reports whether manager is one of the supported
 // package manager binaries.
 func ValidPackageManager(manager string) bool {
@@ -83,38 +103,91 @@ func ValidPackageManager(manager string) bool {
 // which fails with "seteuid 42 failed" in containers lacking CAP_SETUID.
 const aptSandboxOpt = "APT::Sandbox::User=root"
 
-// AppInstallSteps builds the complete, whitelisted argv sequence to install
-// app with manager. Nothing here accepts panel-supplied strings beyond the
-// app key, and the package name always comes from this catalog. apt-get
-// refreshes the package lists first (a stale list is the most common reason a
-// fresh install fails); its failure is non-fatal, matching a manual install.
-func AppInstallSteps(manager, app string) ([][]string, error) {
-	if !ValidPackageManager(manager) {
-		return nil, fmt.Errorf("unsupported package manager %q", manager)
-	}
-	spec, ok := AppSpecByName(app)
-	if !ok {
-		return nil, fmt.Errorf("unknown app %q", app)
-	}
-	pkg, ok := spec.Packages[manager]
-	if !ok || pkg == "" {
-		return nil, fmt.Errorf("app %s has no package for %s", app, manager)
+// Step is one whitelisted command in an install or removal sequence.
+// Optional steps are housekeeping whose failure does not abort the job —
+// package-manager output is still captured — while a required step's failure
+// fails the whole operation.
+type Step struct {
+	Args     []string
+	Optional bool
+}
+
+// AppInstallSteps builds the complete, whitelisted step sequence to install
+// app with manager, following the package managers' own recovery guidance:
+// apt runs `dpkg --configure -a` first so an interrupted earlier install (the
+// usual way MySQL leaves a half-configured dpkg behind) cannot wedge the new
+// one, then refreshes the package lists (a stale list is the most common
+// reason a fresh install fails). Nothing here accepts panel-supplied strings
+// beyond the app key, and the package name always comes from this catalog.
+func AppInstallSteps(manager, app string) ([]Step, error) {
+	pkg, err := lookupAppPackage(manager, app)
+	if err != nil {
+		return nil, err
 	}
 	switch manager {
 	case "apt-get":
 		// APT::Sandbox::User=root stops apt from dropping privileges to the
 		// _apt user (uid 42) for downloads; in unprivileged containers
 		// (no CAP_SETUID) that seteuid fails and every fetch method dies.
-		return [][]string{
-			{"apt-get", "-o", aptSandboxOpt, "update"},
-			{"apt-get", "-o", aptSandboxOpt, "install", "-y", pkg},
+		return []Step{
+			{Args: []string{"dpkg", "--configure", "-a"}, Optional: true},
+			{Args: []string{"apt-get", "-o", aptSandboxOpt, "update"}, Optional: true},
+			{Args: []string{"apt-get", "-o", aptSandboxOpt, "install", "-y", pkg}},
 		}, nil
 	case "dnf", "yum":
-		return [][]string{{manager, "install", "-y", pkg}}, nil
+		return []Step{{Args: []string{manager, "install", "-y", pkg}}}, nil
 	case "zypper":
-		return [][]string{{"zypper", "--non-interactive", "install", pkg}}, nil
+		return []Step{{Args: []string{"zypper", "--non-interactive", "install", pkg}}}, nil
 	case "apk":
-		return [][]string{{"apk", "add", pkg}}, nil
+		return []Step{{Args: []string{"apk", "add", pkg}}}, nil
 	}
 	return nil, fmt.Errorf("unsupported package manager %q", manager)
+}
+
+// AppRemoveSteps builds the complete, whitelisted step sequence to uninstall
+// app with manager, mirroring AppInstallSteps. apt-get uses purge so a failed
+// install's leftover conffiles and package state are removed too — the
+// primary use case is recovering from an install that half-configured — and
+// then clears now-orphaned dependencies with autoremove, per Debian's
+// official guidance. dnf/yum follow the same remove + autoremove pattern.
+func AppRemoveSteps(manager, app string) ([]Step, error) {
+	pkg, err := lookupAppPackage(manager, app)
+	if err != nil {
+		return nil, err
+	}
+	switch manager {
+	case "apt-get":
+		return []Step{
+			{Args: []string{"dpkg", "--configure", "-a"}, Optional: true},
+			{Args: []string{"apt-get", "-o", aptSandboxOpt, "purge", "-y", pkg}},
+			{Args: []string{"apt-get", "-o", aptSandboxOpt, "autoremove", "-y"}, Optional: true},
+		}, nil
+	case "dnf", "yum":
+		return []Step{
+			{Args: []string{manager, "remove", "-y", pkg}},
+			{Args: []string{manager, "autoremove", "-y"}, Optional: true},
+		}, nil
+	case "zypper":
+		return []Step{{Args: []string{"zypper", "--non-interactive", "remove", pkg}}}, nil
+	case "apk":
+		return []Step{{Args: []string{"apk", "del", pkg}}}, nil
+	}
+	return nil, fmt.Errorf("unsupported package manager %q", manager)
+}
+
+// lookupAppPackage validates manager and app against the whitelists and
+// returns the distro package name for the combination.
+func lookupAppPackage(manager, app string) (string, error) {
+	if !ValidPackageManager(manager) {
+		return "", fmt.Errorf("unsupported package manager %q", manager)
+	}
+	spec, ok := AppSpecByName(app)
+	if !ok {
+		return "", fmt.Errorf("unknown app %q", app)
+	}
+	pkg, ok := spec.Packages[manager]
+	if !ok || pkg == "" {
+		return "", fmt.Errorf("app %s has no package for %s", app, manager)
+	}
+	return pkg, nil
 }

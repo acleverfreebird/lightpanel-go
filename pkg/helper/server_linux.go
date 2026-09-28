@@ -300,10 +300,13 @@ func (s *server) dispatch(uid int, req *Request) Response {
 		return s.site(req)
 	case OpApp:
 		if !s.cfg.AllowApps {
-			return Response{Error: "app installation requires allow_apps = true in [helper]"}
+			return Response{Error: "app management requires allow_apps = true in [helper]"}
 		}
 		if !ValidAppAction(req.Action) {
 			return Response{Error: "unsupported app action"}
+		}
+		if req.Action == "remove" {
+			return s.appRemove(req)
 		}
 		return s.appInstall(req)
 	case OpDatabase:

@@ -30,7 +30,7 @@ pkg/sysinfo/update.go        检查 GitHub Release、校验 SHA256、替换二�
 pkg/sysinfo/logs.go          journalctl 系统与服务日志
 pkg/sysinfo/firewall.go      UFW/firewalld 状态和端口规则
 pkg/sysinfo/sites.go         站点管理：环境识别、nginx/Apache 配置解析、静态站点与 Docker 部署
-pkg/sysinfo/apps.go          应用商店：应用目录状态检测、后台安装任务
+pkg/sysinfo/apps.go          应用商店：应用目录状态检测、后台安装/卸载任务
 pkg/sysinfo/databases.go     数据库管理：引擎识别、库与用户列表、建库/删库/用户操作
 pkg/helper/protocol.go       最小特权 helper 协议（请求/响应、目录校验）
 pkg/helper/sites.go          站点校验器/配置模板/托管目录规则（面板与 helper 共享）
@@ -55,7 +55,7 @@ docs/VALIDATION.md           验证记录与已知限制
 
 ### MVP 范围
 
-已实现：系统概览（指标趋势、主机信息、运行诊断）、进程搜索/分页/结束、systemd 服务管理（已加载与已安装单元、启停/重启/重载/开机自启）、全盘文件浏览/上传/下载/新建文件夹/重命名/在线编辑/递归删除/权限、版本检查与一键更新、单管理员登录和可选只读权限、系统/服务日志、防火墙端口规则、站点管理（自动识别 Nginx/Apache/Docker/certbot，浏览已配置站点，创建静态站点、反向代理或 Docker 容器部署，Let's Encrypt 证书签发，受控删除与重载）、应用商店（通过系统软件包管理器一键安装 Nginx/Apache/Docker/certbot/MySQL/MariaDB/PostgreSQL/Redis，安装为后台任务并可查看进度与输出）、数据库管理（自动识别 MySQL/MariaDB/PostgreSQL/Redis，查看库与用户，建库/删库、创建用户与修改密码，引擎启停）。Web 终端是需求中的可选项，本版不包含，`/ws/terminal` 返回 404。
+已实现：系统概览（指标趋势、主机信息、运行诊断）、进程搜索/分页/结束、systemd 服务管理（已加载与已安装单元、启停/重启/重载/开机自启）、全盘文件浏览/上传/下载/新建文件夹/重命名/在线编辑/递归删除/权限、版本检查与一键更新、单管理员登录和可选只读权限、系统/服务日志、防火墙端口规则、站点管理（自动识别 Nginx/Apache/Docker/certbot，浏览已配置站点，创建静态站点、反向代理或 Docker 容器部署，Let's Encrypt 证书签发，受控删除与重载）、应用商店（通过系统软件包管理器一键安装/卸载 Nginx/Apache/Docker/certbot/MySQL/MariaDB/PostgreSQL/Redis，安装与卸载均为后台任务并可查看进度与输出）、数据库管理（自动识别 MySQL/MariaDB/PostgreSQL/Redis，查看库与用户，建库/删库、创建用户与修改密码，引擎启停）。Web 终端是需求中的可选项，本版不包含，`/ws/terminal` 返回 404。
 
 安全边界：这是有权限的主机管理工具，不是多租户容器。文件管理面向**整个文件系统**：所有接口只接受绝对路径，`..` 组件、反斜杠与 NUL 一律拒绝；`/proc`、`/sys`、`/dev`、`/run` 这四个虚拟系统目录拒绝删除与移动。下载/编辑读取只接受普通文件（符号链接若最终指向普通文件也可下载）；chmod 只接受普通文件与目录，且拒绝 setuid/setgid 与符号链接；只允许普通文件上传，禁止覆盖；目录删除默认要求为空，带 `recursive=true` 时递归删除且不允许删除根；在线编辑只处理 ≤1 MiB 且不含 NUL 的普通文件，保存先写临时文件再原子替换，且拒绝以符号链接为目标的写入。进程以 root 运行时这些接口等同 root 文件权限；默认的最小特权模式下面板以专用非特权用户 `lightpanel` 运行（见「最小特权 helper」），文件接口仅等同该用户权限。无论哪种模式，请务必启用 TLS/反代并保管好管理员密码。
 
@@ -101,9 +101,9 @@ API 默认必须登录。页面 `GET /` 未登录时跳转到 `/login`；API 返
 | POST | `/api/sites/action` | `id,op=start或stop或delete或reload,engine`；Docker 仅允许对带面板标签/名称前缀的容器操作；原生删除仅允许删除含 `# managed by lightpanel` 标记的配置，删除后重载引擎 |
 | GET | `/api/sites/certs` | certbot 证书列表（原文输出）；certbot 未安装返回 501 |
 | POST | `/api/sites/cert` | `domain,email,engine=nginx或apache`；certbot HTTP-01 为单个具体域名签发证书并自动改写站点配置启用 HTTPS（通配符域名需 DNS-01，不支持） |
-| GET | `/api/apps` | 应用商店总览：`package_manager`（apt-get/dnf/yum/zypper/apk 自动探测）+ `items`（固定目录 nginx/apache/docker/certbot/mysql/mariadb/postgresql/redis 的安装、运行与版本）+ `job`（最近一次安装任务状态） |
-| POST | `/api/apps/install` | `name`（必须是应用目录白名单键）；在后台启动安装任务并立即返回，同一时间只允许一个安装任务（占用中返回 409） |
-| GET | `/api/apps/job` | 查询安装任务：`app,state=running或done或error,output,error`；前端每 3 秒轮询直到结束 |
+| GET | `/api/apps` | 应用商店总览：`package_manager`（apt-get/dnf/yum/zypper/apk 自动探测）+ `items`（固定目录 nginx/apache/docker/certbot/mysql/mariadb/postgresql/redis 的安装、运行、版本与分组 `group`） |
+| POST | `/api/apps/install` | `name`（必须是应用目录白名单键）；在后台启动安装任务并立即返回。同分组应用互斥（nginx 与 apache 同属 web 分组，一台主机只能安装一个网页服务器，被占用时返回 409）；同一应用同时只允许一个安装或卸载任务（占用中返回 409） |
+| POST | `/api/apps/remove` | `name`（必须是应用目录白名单键）；在后台启动卸载任务并立即返回，APT 下为 purge（同时清除配置文件与安装失败残留），同一应用同时只允许一个安装或卸载任务（占用中返回 409） |
 | GET | `/api/databases` | 数据库管理总览：`engines`（mysql/mariadb/postgresql/redis 的安装、运行与版本）+ `databases`/`users`（按引擎的库与用户列表，系统库/账号已过滤）+ `units`（各引擎的 systemd 单元，供启停按钮）+ `errors`（单个引擎列表失败原因） |
 | POST | `/api/databases/create` | `engine,name`；创建数据库（名称限字母/数字/下划线，最长 63 字符） |
 | POST | `/api/databases/delete` | `engine,name`；删除数据库（不可恢复） |
@@ -131,9 +131,12 @@ API 默认必须登录。页面 `GET /` 未登录时跳转到 `/login`；API 返
 应用商店语义：
 
 - 固定目录：nginx、apache、docker、certbot、mysql、mariadb、postgresql、redis；应用名必须是目录白名单键，不接受任意软件包名。部分应用在个别包管理器下无对应软件包（如 mysql 在 zypper/apk），界面会提示“当前软件包管理器不提供此应用”。
+- 同类型互斥：目录中的应用带分组（nginx 与 apache 同属 `web` 分组）。同分组应用只能安装一个——安装前实时探测，已装 nginx 时安装 apache 返回 409，界面显示“已被 Nginx 占用”且不提供安装按钮；卸载后即可安装另一个。
 - 包管理器自动探测：按 apt-get → dnf → yum → zypper → apk 顺序探测，安装参数由共享目录（`pkg/helper/apps.go`）按发行版重建（如 apache 在 Debian 系为 `apache2`、RHEL 系为 `httpd`），面板不传递原始 argv。
-- 后台任务：安装可能持续数分钟，`POST /api/apps/install` 启动后台任务后立即返回，前端轮询 `/api/apps/job` 展示进度与包管理器输出；同一时间仅允许一个安装任务。apt-get 安装前会先刷新软件包列表（刷新失败不阻断安装）。
-- 最小特权模式：安装经 helper 的 `app` 操作（`allow_apps = true`），helper 端重新探测包管理器并重建全部参数；root 模式由面板直接执行。
+- 安装遵循官方恢复手段：apt-get 安装前先执行 `dpkg --configure -a`（修复此前失败安装留下的半配置状态，如装坏的 MySQL）并刷新软件包列表，二者失败不阻断安装本身。
+- 卸载遵循官方清理手段：apt-get 先 `dpkg --configure -a` 再 `purge -y`（连同配置文件与安装失败残留一起移除），最后 `autoremove -y` 清理孤儿依赖；dnf/yum 为 `remove -y` + `autoremove -y`；zypper 为 `remove`；apk 为 `del`。收尾清理步骤失败不阻断卸载结果。
+- 后台任务：安装与卸载可能持续数分钟，`POST /api/apps/install` / `POST /api/apps/remove` 启动后台任务后立即返回，前端在任务中心查看进度与包管理器输出，完成后提示“已成功安装”并引导前往对应页面（数据库类 →「数据库管理」，网页服务器/Docker/certbot →「站点管理」）；同一应用同时仅允许一个安装或卸载任务。
+- 最小特权模式：安装与卸载经 helper 的 `app` 操作（`allow_apps = true`），helper 端重新探测包管理器并重建全部参数；root 模式由面板直接执行。
 
 数据库管理语义：
 
@@ -297,7 +300,7 @@ allow_firewall = true   # ufw/firewalld 端口规则（读+写）
 allow_kill = true       # 对任意进程发 SIGTERM/SIGKILL（进程身份经 pidfd 固定）
 allow_update = true     # 在线更新：helper 复核 SHA256 后安装并重启面板
 allow_sites = true      # 托管站点：配置写入（helper 端重新生成内容）、托管删除、引擎重载、certbot
-allow_apps = true       # 应用商店：经系统软件包管理器安装固定目录中的应用（参数在 helper 端重建）
+allow_apps = true       # 应用商店：经系统软件包管理器安装/卸载固定目录中的应用（参数在 helper 端重建）
 allow_databases = true  # 数据库管理：列表/建库/删库/用户管理（密码仅经 stdin，参数在 helper 端重建）
 
 # 按服务/动作细分授权：单元名 = 允许的 systemd 动作（start/stop/restart）。

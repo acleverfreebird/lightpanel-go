@@ -73,6 +73,7 @@ func newHandler(cfg *config.Config, files *sysinfo.Files, manager *sysinfo.Manag
 	apps := sysinfo.NewAppManager(tasks)
 	register("GET /api/apps", apps.Apps)
 	register("POST /api/apps/install", apps.AppInstall)
+	register("POST /api/apps/remove", apps.AppRemove)
 	register("GET /api/tasks", tasks.Tasks)
 	register("GET /api/tasks/{id}", tasks.TaskDetail)
 	register("POST /api/tasks/clear", tasks.ClearFinished)

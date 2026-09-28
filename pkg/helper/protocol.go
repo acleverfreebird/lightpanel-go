@@ -18,7 +18,7 @@ const (
 	OpKill           = "kill"            // signal a process by pinned identity
 	OpUpdate         = "update"          // verify + install a checksummed update and restart the panel
 	OpSite           = "site"            // managed web-site configuration, gated by allow_sites
-	OpApp            = "app"             // install a catalog app via the system package manager, gated by allow_apps
+	OpApp            = "app"             // install or remove a catalog app via the system package manager, gated by allow_apps
 	OpDatabase       = "database"        // managed database operations, gated by allow_databases
 	OpHello          = "hello"           // protocol handshake; no ACL, returns ProtocolVersion
 )
@@ -49,10 +49,10 @@ var siteActions = map[string]bool{
 // ValidSiteAction reports whether action is a helper-permitted site operation.
 func ValidSiteAction(action string) bool { return siteActions[action] }
 
-// App actions for OpApp. The only action is "install": the helper resolves
-// the system package manager itself and rebuilds the full argv from the
-// catalog in apps.go — the panel only sends the app name.
-var appActions = map[string]bool{"install": true}
+// App actions for OpApp. "install" and "remove": the helper resolves the
+// system package manager itself and rebuilds the full argv from the catalog
+// in apps.go — the panel only sends the app name.
+var appActions = map[string]bool{"install": true, "remove": true}
 
 // ValidAppAction reports whether action is a helper-permitted app operation.
 func ValidAppAction(action string) bool { return appActions[action] }
