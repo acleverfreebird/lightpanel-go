@@ -1,4 +1,5 @@
-import { $, api, mutate, guard, el, button, table, badge, confirmAction, readOnly } from './ui.js';
+import { $, api, mutate, guard, el, button, table, badge, confirmAction, readOnly, message } from './ui.js';
+import { openTaskCenter } from './tasks.js';
 import { files } from './files.js';
 
 const engineNames = { nginx: 'Nginx', apache: 'Apache', docker: 'Docker', certbot: 'Certbot' };
@@ -132,10 +133,11 @@ async function issueCert(site) {
     numeric: false,
   });
   if (email === null) return;
-  await mutate('/api/sites/cert', { domain, email, engine: site.engine });
+  const result = await mutate('/api/sites/cert', { domain, email, engine: site.engine });
   certsLoaded = false;
   $('#cert-panel').open = true;
-  await loadCerts();
+  if (result?.task_id) openTaskCenter(result.task_id);
+  else await loadCerts();
 }
 
 async function loadCerts() {
@@ -165,6 +167,11 @@ export function setupSites(navigate) {
   $('#site-form [name=mode]').addEventListener('change', syncForm);
   $('#cert-refresh').addEventListener('click', guard(loadCerts));
   $('#cert-panel').addEventListener('toggle', () => { if ($('#cert-panel').open && !certsLoaded) $('#cert-refresh').click(); });
+  window.addEventListener('task-finished', event => {
+    if (event.detail?.kind !== 'issue-cert') return;
+    if (event.detail.state !== 'done') certsLoaded = false;
+    else loadCerts().then(() => message(`${event.detail.title}完成，站点已启用 HTTPS。`)).catch(() => {});
+  });
   $('#site-form').addEventListener('submit', guard(async () => {
     const data = Object.fromEntries(new FormData($('#site-form')));
     if (data.engine === 'docker' && !data.image?.trim()) throw new Error('Docker 部署需要填写镜像名称。');

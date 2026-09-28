@@ -471,6 +471,25 @@ func TestIssueCert(t *testing.T) {
 	if w := post(url.Values{"domain": {"blog.example.com"}, "email": {"a@b.co"}, "engine": {"nginx"}}); w.Code != 200 {
 		t.Fatalf("valid issuance failed: %d %s", w.Code, w.Body.String())
 	}
+	// Issuance runs as a background task now; wait for it to finish before
+	// asserting on the captured helper request.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		tasks := m.TaskCenter()
+		tasks.mu.Lock()
+		state := ""
+		if len(tasks.tasks) > 0 {
+			state = tasks.tasks[0].State
+		}
+		tasks.mu.Unlock()
+		if state == TaskDone || state == TaskError {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("issuance task did not finish (state %q)", state)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	if got.Op != helper.OpSite || got.Action != "issue-cert" || got.Domain != "blog.example.com" || got.Email != "a@b.co" || got.Engine != "nginx" {
 		t.Fatalf("wrong helper cert request: %+v", got)
 	}

@@ -7,6 +7,7 @@ import { logs, firewall, setupTools } from './tools.js';
 import { sites, setupSites } from './sites.js';
 import { databases, setupDatabases } from './databases.js';
 import { apps, setupApps } from './apps.js';
+import { setupTasks } from './tasks.js';
 import { setupUpdate } from './update.js';
 import { hydrateIcons } from './icons.js';
 
@@ -92,7 +93,7 @@ $('.skip-link').addEventListener('click', event => {
 });
 $('#refresh').addEventListener('click', guard(() => { message(''); return refresh(); }));
 $('#message-close').addEventListener('click', () => message(''));
-setupProcesses(); setupServices(go); setupFiles(); setupTools(); setupApps(); setupSites(go); setupDatabases(); setupUpdate();
+setupProcesses(); setupServices(go); setupFiles(); setupTools(); setupApps(); setupSites(go); setupDatabases(); setupUpdate(); setupTasks();
 if (readOnly) document.querySelectorAll('[data-mutation]').forEach(control => { control.disabled = true; control.title = '当前账号只有查看权限'; });
 $('#auto-refresh').addEventListener('change', () => { if ($('#auto-refresh').checked && current === 'overview') refresh(); });
 setInterval(() => { if (!document.hidden && current === 'overview' && $('#auto-refresh').checked) refresh(); }, 3000);

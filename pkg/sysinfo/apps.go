@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"lightpanel/pkg/helper"
@@ -27,29 +26,20 @@ type AppInfo struct {
 	Package     string `json:"package,omitempty"`
 }
 
-// AppJob reports the state of the background install. Installs run as a
-// single-slot job instead of inside the HTTP request: package managers can
-// run for minutes, which would otherwise hit the server's write timeout.
-type AppJob struct {
-	App    string `json:"app,omitempty"`
-	State  string `json:"state,omitempty"` // "", "running", "done", "error"
-	Output string `json:"output,omitempty"`
-	Error  string `json:"error,omitempty"`
-}
-
 const (
 	appStepTimeout     = 6 * time.Minute
 	appInstallDeadline = 9 * time.Minute // helper connection cap is 10 minutes
 )
 
+// AppManager serves the catalog and runs installs as task-center tasks:
+// package managers can run for minutes, which would otherwise hit the
+// server's write timeout.
 type AppManager struct {
 	SiteManager
-	mu  sync.Mutex
-	job AppJob
 }
 
-func NewAppManager() *AppManager {
-	return &AppManager{SiteManager: SiteManager{Run: RunCommand, RunTimeout: RunCommandTimeout}}
+func NewAppManager(tasks *TaskManager) *AppManager {
+	return &AppManager{SiteManager: SiteManager{Run: RunCommand, RunTimeout: RunCommandTimeout, Tasks: tasks}}
 }
 
 func (m *AppManager) detectPackageManager(ctx context.Context) string {
@@ -85,80 +75,65 @@ func (m *AppManager) Apps(w http.ResponseWriter, r *http.Request) {
 		}
 		items = append(items, info)
 	}
-	m.mu.Lock()
-	job := m.job
-	m.mu.Unlock()
 	JSON(w, struct {
 		PackageManager string    `json:"package_manager"`
 		Items          []AppInfo `json:"items"`
-		Job            AppJob    `json:"job"`
-	}{manager, items, job})
+	}{manager, items})
 }
 
-// AppInstall validates the app name, reserves the single install slot and
-// starts the install in the background. The response returns immediately;
-// progress is polled via InstallJob.
+// AppInstall validates the app name and starts the install as a background
+// task-center task. The response returns immediately; progress is watched
+// in the task center and polled via /api/tasks/{id}.
 func (m *AppManager) AppInstall(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimSpace(r.FormValue("name"))
 	if !helper.ValidAppName(name) {
 		http.Error(w, "unknown app", 400)
 		return
 	}
-	m.mu.Lock()
-	if m.job.State == "running" {
-		m.mu.Unlock()
+	tasks := m.TaskCenter()
+	if tasks.Running("app-install", name) {
 		http.Error(w, "an install job is already running", 409)
 		return
 	}
-	m.job = AppJob{App: name, State: "running"}
-	m.mu.Unlock()
-	go m.runInstall(name)
-	JSON(w, map[string]string{"message": "install started", "app": name})
-}
-
-func (m *AppManager) runInstall(name string) {
-	ctx, cancel := context.WithTimeout(context.Background(), appInstallDeadline)
-	defer cancel()
-	out, err := m.install(ctx, name)
-	job := AppJob{App: name, State: "done", Output: helper.TrimOutput(out)}
-	if err != nil {
-		job.State, job.Error = "error", err.Error()
+	title := name
+	for _, spec := range helper.AppCatalog {
+		if spec.Name == name {
+			title = spec.Title
+			break
+		}
 	}
-	m.mu.Lock()
-	m.job = job
-	m.mu.Unlock()
+	task := tasks.Start("app-install", name, "安装 "+title, func(ctx context.Context, appendOut func(string)) error {
+		ctx, cancel := context.WithTimeout(ctx, appInstallDeadline)
+		defer cancel()
+		return m.install(ctx, name, appendOut)
+	})
+	JSON(w, map[string]string{"message": "install started", "app": name, "task_id": task.ID})
 }
 
 // install runs the catalog steps either through the privileged helper
 // (which re-detects the package manager and re-validates everything) or
-// directly with the panel's own privileges (root mode).
-func (m *AppManager) install(ctx context.Context, name string) (string, error) {
+// directly with the panel's own privileges (root mode). Output is appended
+// as it becomes available: per step in direct mode, once at the end when
+// the helper returns.
+func (m *AppManager) install(ctx context.Context, name string, appendOut func(string)) error {
 	if out, routed, err := privileged(ctx, helper.Request{Op: helper.OpApp, Action: "install", App: name}); routed {
-		return out, err
+		appendOut(helper.TrimOutput(out))
+		return err
 	}
 	manager := m.detectPackageManager(ctx)
 	if manager == "" {
-		return "", ErrUnavailable
+		return ErrUnavailable
 	}
 	steps, err := helper.AppInstallSteps(manager, name)
 	if err != nil {
-		return "", err
+		return err
 	}
-	var all strings.Builder
 	for _, step := range steps {
 		out, err := m.RunTimeout(ctx, appStepTimeout, step[0], step[1:]...)
-		all.WriteString(out)
+		appendOut(helper.TrimOutput(out))
 		if err != nil {
-			return all.String(), err
+			return err
 		}
 	}
-	return all.String(), nil
-}
-
-// InstallJob reports the current (or last) install job for polling.
-func (m *AppManager) InstallJob(w http.ResponseWriter, r *http.Request) {
-	m.mu.Lock()
-	job := m.job
-	m.mu.Unlock()
-	JSON(w, job)
+	return nil
 }

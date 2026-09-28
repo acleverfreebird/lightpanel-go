@@ -16,6 +16,7 @@ const paths = {
   memory: 'M3 6h18v11H3z M7 10v3 M12 10v3 M17 10v3 M6 17v3 M10 17v3 M14 17v3 M18 17v3',
   disk: 'M6 4h12l3 10v6H3v-6z M3 14h18 M16 17h2',
   network: 'M8 3v17 M3 8l5-5 5 5 M16 21V4 M11 16l5 5 5-5',
+  tasks: 'M8 3h8v4H8z M5 5v16h14V5 M9 13l2 2 4-4',
 };
 
 export function icon(name) {

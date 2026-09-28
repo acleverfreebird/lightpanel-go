@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"lightpanel/pkg/helper"
@@ -64,10 +65,28 @@ type Site struct {
 type SiteManager struct {
 	Run        Runner
 	RunTimeout func(context.Context, time.Duration, string, ...string) (string, error)
+
+	// taskMu guards lazy TaskManager creation for zero-value managers (tests);
+	// server.go injects one shared TaskManager across managers.
+	taskMu sync.Mutex
+	Tasks  *TaskManager
 }
 
-func NewSiteManager() *SiteManager {
-	return &SiteManager{Run: RunCommand, RunTimeout: RunCommandTimeout}
+func NewSiteManager(tasks *TaskManager) *SiteManager {
+	return &SiteManager{Run: RunCommand, RunTimeout: RunCommandTimeout, Tasks: tasks}
+}
+
+// TaskCenter returns the manager's task registry, creating one on demand.
+func (m *SiteManager) TaskCenter() *TaskManager {
+	if m.Tasks != nil {
+		return m.Tasks
+	}
+	m.taskMu.Lock()
+	defer m.taskMu.Unlock()
+	if m.Tasks == nil {
+		m.Tasks = &TaskManager{}
+	}
+	return m.Tasks
 }
 
 // ---- engine detection ----
@@ -919,8 +938,9 @@ func (m *SiteManager) Certificates(w http.ResponseWriter, r *http.Request) {
 
 // IssueCert requests a Let's Encrypt certificate for one domain with certbot.
 // The engine installer plugin rewrites the site's server block for HTTPS.
+// Validation stays synchronous; the ACME round-trip itself runs as a
+// task-center task so the HTTP request returns immediately.
 func (m *SiteManager) IssueCert(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
 	domain := strings.TrimSpace(r.FormValue("domain"))
 	email := strings.TrimSpace(r.FormValue("email"))
 	engine := r.FormValue("engine")
@@ -936,17 +956,22 @@ func (m *SiteManager) IssueCert(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "engine must be nginx or apache", 400)
 		return
 	}
-	// The panel forwards with a long deadline so the ACME round-trip survives.
-	cctx, cancel := context.WithTimeout(ctx, 300*time.Second)
-	defer cancel()
-	args := []string{"-n", "--agree-tos", "-m", email, "-d", domain, "--" + engine}
-	out, routed, err := privileged(cctx, helper.Request{Op: helper.OpSite, Action: "issue-cert", Domain: domain, Email: email, Engine: engine})
-	if !routed {
-		out, err = m.RunTimeout(cctx, 280*time.Second, "certbot", args...)
-	}
-	if err != nil {
-		commandError(w, out, err)
+	tasks := m.TaskCenter()
+	if tasks.Running("issue-cert", domain) {
+		http.Error(w, "a certificate is already being issued for this domain", 409)
 		return
 	}
-	JSON(w, map[string]string{"message": "certificate issued for " + domain, "output": helper.TrimOutput(out)})
+	task := tasks.Start("issue-cert", domain, "签发证书 "+domain, func(ctx context.Context, appendOut func(string)) error {
+		// The panel forwards with a long deadline so the ACME round-trip survives.
+		cctx, cancel := context.WithTimeout(ctx, 300*time.Second)
+		defer cancel()
+		args := []string{"-n", "--agree-tos", "-m", email, "-d", domain, "--" + engine}
+		out, routed, err := privileged(cctx, helper.Request{Op: helper.OpSite, Action: "issue-cert", Domain: domain, Email: email, Engine: engine})
+		if !routed {
+			out, err = m.RunTimeout(cctx, 280*time.Second, "certbot", args...)
+		}
+		appendOut(helper.TrimOutput(out))
+		return err
+	})
+	JSON(w, map[string]string{"message": "certificate issuance started for " + domain, "task_id": task.ID})
 }
