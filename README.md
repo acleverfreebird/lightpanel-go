@@ -140,7 +140,7 @@ API 默认必须登录。页面 `GET /` 未登录时跳转到 `/login`；API 返
 - 引擎检测：探测 mysqld/mariadbd/postgres/redis-server 二进制版本与 systemd 运行状态（`postgresql@*.service` 实例单元无法用 `is-active` 探测，以 `postgresql.service` 为准）；Redis 为键值型数据库，仅提供状态查看与启停，不提供库/用户管理。
 - 列表：MySQL/MariaDB 通过本机 socket 以 root 身份执行 `SHOW DATABASES` / 查询 `mysql.user`（依赖 root 的 socket/uvp 认证，Debian/Ubuntu 与 RHEL 系 MariaDB 默认满足）；PostgreSQL 通过 `runuser -u postgres -- psql` 执行。`information_schema`/`mysql`/`performance_schema`/`sys` 与系统账号不出现在列表中。
 - 建库/删库/用户：数据库名限 `[a-zA-Z0-9_]`（1–63 字符），用户名限 `[a-zA-Z0-9_.-]`（1–32 字符）；全部 argv 由共享模块（`pkg/helper/databases.go`）在面板与 helper 两端重建。密码只经 stdin 渲染进 SQL，绝不出现在进程参数；含引号、反斜杠与 Unicode 的密码会被正确转义，但不允许控制字符。
-- 启停：数据库页的启动/停止/重启走系统服务页同一套 `POST /api/service/action`；最小特权模式需要在 `helper.services` 中加入对应单元（如 `mysql.service`、`postgresql.service`、`redis-server.service`）。
+- 启停：数据库页的启动/停止/重启走系统服务页同一套 `POST /api/service/action`；`helper.services` 缺省通配放行所有单元，收紧模式下需加入对应单元（如 `mysql.service`、`postgresql.service`、`redis-server.service`）。
 - 最小特权模式：列表与变更经 helper 的 `database` 操作（`allow_databases = true`），helper 端重新校验引擎、名称与密码并重建全部命令；root 模式由面板直接执行。
 
 CPU/网络首次请求用于建立基线，后续返回采样间隔平均值；共享缓存最多每 2 秒采样一次。网络是非 loopback 接口汇总，虚拟网卡可能重复计数；磁盘显示根分区。进程只展示 UID、名称、状态、RSS，不收集可能包含密码的完整命令行。
@@ -177,9 +177,9 @@ sudo bash install-lightpanel.sh
 要点：
 
 - 因为需要交互输入管理员密码（12–72 字节，不回显、不落盘明文），请使用上面两步式命令，而不是 `curl … | sudo bash` 管道形式。
-- 重复执行同一命令即为升级：替换二进制并重启服务（面板与 helper 一并重启），保留现有 `config.toml` 与密码。新版本新增的配置项会在服务启动时自动补全进 `config.toml`：已有键的值与注释原样保留，缺失条目连同注释追加（原配置备份为 `config.toml.bak`）；特权授权类开关（`allow_*`）以注释形式补全，是否启用由管理员显式决定。面板内的「在线更新」同样如此。
+- 重复执行同一命令即为升级：替换二进制并重启服务（面板与 helper 一并重启），保留现有 `config.toml` 与密码。新版本新增的配置项会在服务启动时自动补全进 `config.toml`：已有键的值与注释原样保留，缺失条目连同注释追加（原配置备份为 `config.toml.bak`）；缺省策略为「部署即全功能」，未显式写入的 `allow_*` 开关与 `services` 白名单在运行时按开启处理，升级时缺失条目也会显式补全为 `true`。面板内的「在线更新」同样如此。
 - 非交互环境（自动化脚本）预置哈希：`curl -fsSL …/install.sh | sudo LP_PASS_HASH='<bcrypt 哈希>' bash -`；哈希先用 `lightpanel -hash-password` 在有终端的机器上生成。
-- 反向代理/域名访问：`sudo bash install-lightpanel.sh --origin https://panel.example.com`（仍监听 `127.0.0.1`，TLS 由反代终止）。
+- 反向代理/域名访问：`sudo bash install-lightpanel.sh --origin https://panel.example.com`（面板默认监听 `0.0.0.0`，反代场景也可自行将配置中的 `host` 改回 `127.0.0.1`，TLS 由反代终止）。
 - 其他选项：`--port 8888`、`--admin NAME`、`--read-only`、`--release latest`（改用 GitHub Release 预编译二进制，含 sha256 校验）、`--ref TAG`、`--force-config`（重写配置）、`--no-start`、`--legacy-root`（旧版 root 面板模式，不创建专用用户/不启用 helper）；完整列表见 `sudo bash install-lightpanel.sh --help`。
 - 版本号注入：源码编译安装会自动注入版本号（`--ref` 为标签时用标签名；默认 `main` 分支时查询 GitHub 最新 Release 的标签，查询失败退回 `main`），也可用 `sudo LP_VERSION='v1.2.3' bash install-lightpanel.sh` 显式指定。版本号影响面板内「检查更新」的版本对比，`dev` 版本会跳过对比。
 - GitHub 直连不畅时：`sudo LP_SOURCE_MIRROR='https://ghproxy.example/' bash install-lightpanel.sh`，源码/Release 下载会先尝试镜像前缀再回退官方地址（Go 工具链已内置 golang.google.cn 与阿里云镜像回退，Go 模块代理失败自动切换 goproxy.cn）。
@@ -233,7 +233,9 @@ sudo install -m 0600 config/example.toml /opt/lightpanel/config.toml
 sudo /opt/lightpanel/lightpanel -c /opt/lightpanel/config.toml
 ```
 
-默认只监听 `127.0.0.1:8888`。在本机浏览器访问 `http://127.0.0.1:8888`；远端可用 SSH 隧道：
+默认监听 `0.0.0.0:8888` 并放行明文 HTTP 对外（`allow_public_http` 缺省开启）：服务器上任意网卡 IP 都可以直接访问 `http://<服务器IP>:8888`（公网访问请确认云安全组/防火墙已放行端口）。绑定 `0.0.0.0` 且未配置域名 `public_origin` 时为通配模式，Host/Origin 校验按请求自身的 Host 放行，经由任意 IP 访问均可。
+
+如需仅本机访问（更安全），将配置改为 `host = "127.0.0.1"` 与 `allow_public_http = false` 并重启服务；此时远端可用 SSH 隧道：
 
 ```bash
 ssh -N -L 8888:127.0.0.1:8888 user@your-server
@@ -245,9 +247,9 @@ TOML 是可选外部文件：不传 `-c` 时只用安全默认值和环境变量
 
 ### HTTPS 与反向代理
 
-直接 TLS：设置 `tls_cert`、`tls_key` 为 PEM 路径、`public_origin="https://panel.example.com:8888"`。需要公网监听时另外设置 `host="0.0.0.0"`。证书续期后重启面板加载；本版不内置 ACME，证书可由现有反代/证书工具管理。
+直接 TLS：设置 `tls_cert`、`tls_key` 为 PEM 路径、`public_origin="https://panel.example.com:8888"`（默认已监听 `0.0.0.0`，无需另设 `host`）。证书续期后重启面板加载；本版不内置 ACME，证书可由现有反代/证书工具管理。
 
-反代 TLS：后端仍监听 `127.0.0.1:8888`，TLS 两项留空，`public_origin="https://panel.example.com"`。无本地证书时默认**强制只允许 loopback 监听**；确需明文 HTTP 对外（如局域网直接访问）可显式设置 `allow_public_http = true`（或环境变量 `LP_ALLOW_PUBLIC_HTTP`），并配合 `host="0.0.0.0"` 监听所有网卡。公网明文传输会暴露凭据与会话，仅建议在可信内网使用；生产环境仍应使用 TLS 或反向代理。绑定 `0.0.0.0` 且未配置域名 `public_origin` 时，浏览器经由实际 IP 访问，Host/Origin 校验按请求自身的 Host 放行（跨站请求仍被 Origin/Referer 与 CSRF token 拦截）；若配置了具体域名/IP 的 `public_origin`，则维持严格 Host 校验，只能经该 origin 访问。Nginx HTTPS server 内示例：
+反代 TLS：TLS 两项留空，`public_origin="https://panel.example.com"`。面板默认绑定 `0.0.0.0` 并放行明文 HTTP 对外（`allow_public_http` 缺省开启，可用环境变量 `LP_ALLOW_PUBLIC_HTTP` 覆盖）；确需对外明文监听的场景应自行评估——公网明文传输会暴露凭据与会话，生产环境仍应使用 TLS 或反向代理。如需收紧：将 `host` 改回 `127.0.0.1` 并设 `allow_public_http = false`，此时无本地证书时仅允许 loopback 监听。绑定 `0.0.0.0` 且未配置域名 `public_origin` 时，浏览器经由实际 IP 访问，Host/Origin 校验按请求自身的 Host 放行（跨站请求仍被 Origin/Referer 与 CSRF token 拦截）；若配置了具体域名/IP 的 `public_origin`，则维持严格 Host 校验，只能经该 origin 访问。Nginx HTTPS server 内示例：
 
 ```nginx
 location / {
@@ -299,12 +301,12 @@ allow_apps = true       # 应用商店：经系统软件包管理器安装固定
 allow_databases = true  # 数据库管理：列表/建库/删库/用户管理（密码仅经 stdin，参数在 helper 端重建）
 
 # 按服务/动作细分授权：单元名 = 允许的 systemd 动作（start/stop/restart）。
-# 空表 = 拒绝一切服务控制；"*" 条目把动作授予所有单元（旧版行为）。
+# 缺省通配放开所有单元；如需收紧，把 "*" 行换成逐个单元，空表 = 全部拒绝。
 [helper.services]
-"nginx.service" = ["start", "stop", "restart"]
+"*" = ["start", "stop", "restart"]
 ```
 
-以上开关默认关闭（缺省即拒绝）。升级后新增的开关会以注释形式自动补全进 `config.toml`，按需取消注释并重启 `lightpanel-helper` 即可生效。
+以上开关缺省全部开启（配置文件未写入即开启，与「部署即全功能」的缺省策略一致）。升级后新增的开关会显式补全为 `true` 进 `config.toml`；如需收紧，把对应值改为 `false`（或把 `[helper.services]` 换成逐单元授权/空表）并重启 `lightpanel-helper` 即可生效。
 
 行为细节：
 

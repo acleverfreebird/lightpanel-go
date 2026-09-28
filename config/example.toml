@@ -1,19 +1,21 @@
 # LightPanel 配置样例，同时是升级迁移的模板：新版本启动时会把既有配置中
 # 缺失的条目（连同注释）自动补全进 config.toml，已有键的值与注释一律保留。
-# 特权授权项（allow_*）以注释形式补全，是否开启由管理员显式决定。
-host = "127.0.0.1"
+# 缺省策略是"部署即全功能"：未显式写入的 allow_* 开关与 services 白名单、
+# allow_public_http 均视为开启；需要收紧时显式写 false（或空的 services 表）。
+host = "0.0.0.0"
 port = 8888
 admin_user = "admin"
 # Generate with ./lightpanel -hash-password; or set LP_PASS_HASH.
 password_hash = ""
 # 上传大小上限（MiB），默认 32。
 max_upload_mb = 32
-public_origin = "http://127.0.0.1:8888"
+# 绑定 0.0.0.0 时面板经由任意网卡 IP 访问，Host/Origin 校验按实际访问地址
+# 放行；配置了域名或固定 IP 的 public_origin 时恢复严格同源校验。
+public_origin = "http://0.0.0.0:8888"
 read_only = false
-# allow_public_http = true 时显式允许在非 loopback 地址（如 host = "0.0.0.0"）
-# 上以明文 HTTP 对外提供面板，便于局域网/所有网卡直接访问。公网明文传输会
-# 暴露凭据与会话，生产环境请改用 TLS 或本机反向代理终止 HTTPS。开启后绑定
-# 通配地址且未配置域名 public_origin 时，Host/Origin 校验按实际访问地址放行。
+# allow_public_http 允许在非 loopback 地址（如上面的 0.0.0.0）上以明文 HTTP
+# 对外提供面板，缺省开启。公网明文传输会暴露凭据与会话，生产环境建议改用
+# TLS 或本机反向代理终止 HTTPS；如需关闭，取消下一行注释（保留 false 值）。
 # allow_public_http = false
 # 在线更新：从 GitHub Releases 检查并下载官方二进制（SHA256 校验后替换）。
 update_repo = "acleverfreebird/lightpanel-go"
@@ -25,31 +27,34 @@ log_file = ""
 
 # 最小特权 helper：非 root 面板把 root 级操作转发给 lightpanel-helper 服务，
 # 由其按下列白名单授权执行。面板以 root 运行时本段被忽略。详见 README。
+# 下列 allow_* 开关缺省全部开启（未写入即开启），如需关闭把对应值改为 false。
 [helper]
 allowed_users = ["lightpanel"]
-# allow_firewall = true
-# allow_kill = true
-# allow_update = true
-# allow_sites = true 时 helper 授权托管站点操作：写入站点配置（内容在
-# helper 端从校验后的参数重新生成）、删除带托管标记的配置、重载引擎与
-# certbot 证书签发。最小特权模式下创建站点需要打开它。
-# allow_sites = true
-# allow_apps = true 时 helper 授权应用商店安装：通过系统软件包管理器安装
-# 固定目录中的应用（nginx/apache/docker/certbot/mysql/mariadb/postgresql/redis）；
-# 应用名经白名单校验，全部安装参数在 helper 端重建。最小特权模式下应用商店
-# 安装需要打开它。
-# allow_apps = true
-# allow_databases = true 时 helper 授权数据库管理操作：列出/创建/删除数据库
-# 与用户管理；引擎、名称与全部参数在 helper 端重建，密码仅经 stdin 传递。
-# allow_databases = true
+# 端口规则（ufw/firewalld，参数在 helper 端白名单重建）
+allow_firewall = true
+# 结束进程（SIGTERM/SIGKILL，进程身份经 pidfd 固定）
+allow_kill = true
+# 在线更新（helper 复核 SHA256 后安装并重启面板）
+allow_update = true
+# 托管站点操作：写入站点配置（内容在 helper 端从校验后的参数重新生成）、
+# 删除带托管标记的配置、重载引擎与 certbot 证书签发。
+allow_sites = true
+# 应用商店安装：通过系统软件包管理器安装固定目录中的应用
+# （nginx/apache/docker/certbot/mysql/mariadb/postgresql/redis）；
+# 应用名经白名单校验，全部安装参数在 helper 端重建。
+allow_apps = true
+# 数据库管理：列出/创建/删除数据库与用户管理；引擎、名称与全部参数在
+# helper 端重建，密码仅经 stdin 传递。
+allow_databases = true
 # socket = "/run/lightpanel/helper.sock"
 # staging_dir = "/var/lib/lightpanel/update"
 
 # 按服务/动作细分授权：单元名 = 允许的 systemd 动作（start/stop/restart）。
-# 空表 = 拒绝一切服务控制；"*" 条目把动作授予所有单元（旧版行为）。
+# 缺省通配放开所有单元（旧版 root 行为）；如需收紧，把 "*" 行换成逐个单元，
+# 例如 "nginx.service" = ["start", "stop", "restart"]；写成空表 = 全部拒绝。
 [helper.services]
-"nginx.service" = ["start", "stop", "restart"]
-# 数据库管理页的启停/重启按钮走服务控制；最小特权模式下按需加入数据库单元：
+"*" = ["start", "stop", "restart"]
+# 数据库管理页的启停/重启按钮走服务控制；收紧模式按需加入数据库单元：
 #   "mysql.service" = ["start", "stop", "restart"]
 #   "mariadb.service" = ["start", "stop", "restart"]
 #   "mysqld.service" = ["start", "stop", "restart"]

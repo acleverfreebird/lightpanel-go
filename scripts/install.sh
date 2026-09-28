@@ -13,7 +13,7 @@ HELPER_UNIT="/etc/systemd/system/${HELPER_SERVICE_NAME}.service"
 PANEL_USER="${LP_PANEL_USER:-lightpanel}"
 GO_FALLBACK="go1.25.0"
 
-HOST="127.0.0.1"
+HOST="0.0.0.0"
 PORT="8888"
 ADMIN_USER="admin"
 ORIGIN=""
@@ -31,9 +31,10 @@ LightPanel 一键安装/升级脚本（Linux amd64/arm64，需 root，建议 sys
 用法: sudo bash install.sh [选项]
 
 选项:
-  --port N              监听端口（默认 8888，仅 127.0.0.1 回环监听）
+  --port N              监听端口（默认 8888，绑定 0.0.0.0 所有网卡，任意 IP 可访问）
   --admin NAME          管理员用户名（默认 admin）
-  --origin URL          public_origin；反代/域名场景如 https://panel.example.com
+  --origin URL          public_origin；反代/域名场景如 https://panel.example.com。
+                        缺省为 http://0.0.0.0:端口（通配模式，按实际访问地址校验）
   --read-only           只读模式（read_only=true）
   --password-hash HASH  预置 bcrypt 哈希（等价于环境变量 LP_PASS_HASH）
   --repo OWNER/NAME     源码仓库（默认 acleverfreebird/lightpanel-go）
@@ -92,22 +93,12 @@ HAVE_SYSTEMD=0
 
 case "$PORT" in ''|*[!0-9]*) fail "端口必须是数字: $PORT";; esac
 [ "$PORT" -ge 1 ] && [ "$PORT" -le 65535 ] || fail "端口必须在 1..65535: $PORT"
-case "$HOST" in
-  127.*|::1) : ;;
-  *) fail "host 必须是回环地址（非回监听需 TLS 证书，请改用反向代理并保持 127.0.0.1）: $HOST" ;;
-esac
 if [ -n "$ORIGIN" ]; then
   case "$ORIGIN" in
     http://*|https://*) : ;;
     *) fail "origin 必须以 http:// 或 https:// 开头: $ORIGIN" ;;
   esac
   case "$ORIGIN" in */) fail "origin 不能以 / 结尾: $ORIGIN";; esac
-  case "$ORIGIN" in
-    https://*) : ;;
-    http://*)
-      oh="${ORIGIN#http://}"; oh="${oh%%/*}"; oh="${oh%%:*}"
-      case "$oh" in 127.*|localhost|::1) : ;; *) fail "http origin 必须是回环地址，远程访问请用 https:// + 反向代理";; esac ;;
-  esac
 fi
 case "$PASS_HASH" in
   '') : ;;
@@ -235,8 +226,9 @@ download_release() {
 
 write_config() {
   local dst="$INSTALL_DIR/config.toml" hash="$1"
+  local default_origin="http://${HOST}:${PORT}"
   awk -v host="$HOST" -v port="$PORT" -v user="$ADMIN_USER" -v hash="$hash" \
-      -v origin="${ORIGIN:-http://127.0.0.1:$PORT}" -v ro="$READ_ONLY" \
+      -v origin="${ORIGIN:-$default_origin}" -v ro="$READ_ONLY" \
       -v panel_user="$PANEL_USER" '
     { gsub(/__HOST__/, host); gsub(/__PORT__/, port); gsub(/__USER__/, user);
       gsub(/__HASH__/, hash); gsub(/__ORIGIN__/, origin);
@@ -247,12 +239,16 @@ admin_user = "__USER__"
 password_hash = "__HASH__"
 public_origin = "__ORIGIN__"
 read_only = __RO__
+# 明文 HTTP 对外放行（缺省开启）。公网明文传输会暴露凭据与会话，
+# 生产环境建议改用 TLS 或本机反向代理终止 HTTPS；如需关闭设为 false。
+allow_public_http = true
 tls_cert = ""
 tls_key = ""
 log_file = ""
 
 # 最小特权 helper：root 级操作由独立的 lightpanel-helper 服务执行，
-# 并按下列白名单授权。详见 README「最小特权 helper」。
+# 并按下列白名单授权。缺省全功能开启（未写入即开启），详见 README
+# 「最小特权 helper」；如需收紧把对应值改为 false。
 [helper]
 allowed_users = ["__PANEL_USER__"]
 # 端口规则（ufw/firewalld，参数在 helper 端白名单重建）
@@ -261,19 +257,26 @@ allow_firewall = true
 allow_kill = true
 # 在线更新（helper 复核 SHA256 后安装并重启面板）
 allow_update = true
+# 托管站点操作（站点配置写入、引擎重载、certbot 证书签发）
+allow_sites = true
+# 应用商店安装（nginx/apache/docker/certbot/mysql 等，白名单校验）
+allow_apps = true
+# 数据库管理（列出/创建/删除数据库与用户管理）
+allow_databases = true
 
 # 按服务/动作细分授权：单元名 = 允许的 systemd 动作。
-# 空列表 = 拒绝一切服务控制（最小特权默认）。按需添加，例如：
-# [helper.services]
-# "nginx.service" = ["start", "stop", "restart"]
-# 或用 "*" = ["start", "stop", "restart"] 放开所有单元（旧版行为）。
+# 缺省通配放开所有单元（等价旧版 root 行为）。如需收紧，把 "*" 行换成
+# 逐个单元，例如 "nginx.service" = ["start", "stop", "restart"]；
+# 写成空表 = 全部拒绝。
 [helper.services]
+"*" = ["start", "stop", "restart"]
 EOF
   chmod 0600 "$dst"
 }
 
-# 升级路径：旧配置没有 [helper] 段时追加默认段。为保持升级后服务控制
-# 仍可用，先用 "*" 通配放开（等价旧版 root 行为），管理员可再收紧。
+# 升级路径：旧配置没有 [helper] 段时追加默认段。缺省全功能开启：
+# allow_* 全部放开并用 "*" 通配授权所有单元（等价旧版 root 行为），
+# 管理员可按 README 收紧。
 append_helper_config() {
   local dst="$INSTALL_DIR/config.toml"
   grep -q '^\[helper\]' "$dst" 2>/dev/null && return 0
@@ -284,6 +287,9 @@ allowed_users = ["$PANEL_USER"]
 allow_firewall = true
 allow_kill = true
 allow_update = true
+allow_sites = true
+allow_apps = true
+allow_databases = true
 
 # 升级默认：通配放开全部单元（旧版 root 行为）。建议改为按需授权，例如
 # 删除 "*" 行并逐个列出单元。
@@ -532,10 +538,15 @@ else
 fi
 
 # ---- 完成摘要 ----
-FINAL_ORIGIN="${ORIGIN:-http://127.0.0.1:$PORT}"
+if [ -n "$ORIGIN" ]; then
+  FINAL_ORIGIN="$ORIGIN"
+else
+  SERVER_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  FINAL_ORIGIN="http://${SERVER_IP:-<服务器IP>}:$PORT"
+fi
 if [ "$LEGACY_ROOT" -eq 0 ]; then
   MODE_NOTE="运行模式: 最小特权（面板用户 $PANEL_USER；root 操作由 lightpanel-helper 按白名单执行）
-  服务控制授权: 编辑 $INSTALL_DIR/config.toml 的 [helper.services]（默认拒绝一切服务控制）"
+  功能授权: 全部开启；如需收紧编辑 $INSTALL_DIR/config.toml 的 [helper] 段"
 else
   MODE_NOTE="运行模式: 旧版 root（--legacy-root；[helper] 不参与）"
 fi
@@ -547,9 +558,10 @@ cat <<SUMMARY
   访问地址: $FINAL_ORIGIN
   $MODE_NOTE
 
-远程访问（SSH 隧道，在本地机器执行）:
-  ssh -N -L $PORT:127.0.0.1:$PORT <user>@<server>
-  然后本地打开 $FINAL_ORIGIN
+面板已绑定 0.0.0.0 并放行明文 HTTP（allow_public_http），服务器上任意网卡
+IP 均可直接访问面板（公网访问请确认云安全组/防火墙已放行 $PORT 端口）。
+如需仅本机访问: 编辑 config.toml 将 host 改为 127.0.0.1 并设
+allow_public_http = false，然后 systemctl restart $SERVICE_NAME。
 
 常用命令:
   systemctl status $SERVICE_NAME

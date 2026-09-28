@@ -18,8 +18,9 @@ var (
 	sectionRe = regexp.MustCompile(`^\[([A-Za-z0-9_.-]+)\]$`)
 	keyRe     = regexp.MustCompile(`^([A-Za-z0-9_.-]+) *=`)
 	// 可选键：模板中以 `# key = value` 注释形式书写的条目（# 后恰一个空格、
-	// 键不带引号）。补全时保持注释形式，是否启用由管理员取消注释决定——
-	// 升级迁移绝不静默开启特权授权。缩进的示例行（如 services 表注释）不匹配。
+	// 键不带引号），如 allow_public_http 的关闭示例与 socket/staging_dir。
+	// 补全时保持注释形式，缺省策略由 LoadConfig 的"未写即开启"兜底。
+	// 缩进的示例行（如 services 表注释）不匹配。
 	optionalKeyRe = regexp.MustCompile(`^# ([A-Za-z0-9_.-]+) *=`)
 )
 
@@ -79,7 +80,8 @@ func parseEntries(text string) []configEntry {
 
 // EnsureCurrent 把模板（example.toml）中用户配置缺失的条目补写进 path，
 // 供版本升级后自动同步新增配置项。已有键的值与注释一律保留；可选键
-// （特权授权等）以注释形式补全。变更前先写 path.bak 备份，再经同目录
+// （关闭示例、socket 路径等）以注释形式补全，allow_* 开关随「部署即全功能」
+// 缺省策略显式补全为 true。变更前先写 path.bak 备份，再经同目录
 // 临时文件原子替换，替换前校验合并结果可被 TOML 解析。
 //
 // 面板与 helper 进程都会在启动时执行迁移：两者基于同一模板与同一文件，

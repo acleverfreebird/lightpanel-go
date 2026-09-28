@@ -48,13 +48,13 @@ func TestEnsureCurrentFillsMissingKeys(t *testing.T) {
 			t.Errorf("existing value lost: %q missing from\n%s", want, text)
 		}
 	}
-	// 特权授权开关以注释形式补全，绝不静默开启。
+	// 特权授权开关随"部署即全功能"缺省策略显式补全为 true。
 	for _, key := range []string{"allow_apps", "allow_databases", "allow_firewall"} {
 		line := findLine(text, key+" = ")
 		if line == "" {
 			t.Errorf("%s not filled in:\n%s", key, text)
-		} else if !strings.HasPrefix(strings.TrimSpace(line), "#") {
-			t.Errorf("%s was enabled silently: %q", key, line)
+		} else if strings.TrimSpace(line) != key+" = true" {
+			t.Errorf("%s not default-enabled: %q", key, line)
 		}
 	}
 	// 段与键都在，且全部键名对新版 Config 可见（DisallowUnknownFields 语义）。

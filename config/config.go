@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
 	"net"
 	"net/url"
@@ -25,9 +26,10 @@ type Config struct {
 	TLSCert      string `toml:"tls_cert"`
 	TLSKey       string `toml:"tls_key"`
 	PublicOrigin string `toml:"public_origin"`
-	// AllowPublicHTTP 显式允许在非 loopback 地址（如 0.0.0.0）上以明文 HTTP
-	// 对外提供面板。默认关闭：公网明文传输会暴露凭据与会话，生产环境应改用
-	// TLS 或本机反向代理终止 HTTPS。
+	// AllowPublicHTTP 允许在非 loopback 地址（如 0.0.0.0）上以明文 HTTP 对外
+	// 提供面板。缺省开启（配置文件与环境变量均未出现该键时视为 true）；
+	// 显式写 allow_public_http = false 可关闭。公网明文传输会暴露凭据与会话，
+	// 生产环境建议改用 TLS 或本机反向代理终止 HTTPS。
 	AllowPublicHTTP bool   `toml:"allow_public_http"`
 	LogFile         string `toml:"log_file"`
 	ReadOnly        bool   `toml:"read_only"`
@@ -72,16 +74,26 @@ type HelperConfig struct {
 }
 
 func LoadConfig(path string) (*Config, error) {
-	c := &Config{Host: "127.0.0.1", Port: 8888, AdminUser: "admin", UpdateRepo: "acleverfreebird/lightpanel-go"}
+	// 缺省绑定通配地址并对明文 HTTP 对外放行：部署即全功能、任意网卡可访问；
+	// 需要收紧时在配置文件里显式写 host/allow_public_http。
+	c := &Config{Host: "0.0.0.0", Port: 8888, AdminUser: "admin", UpdateRepo: "acleverfreebird/lightpanel-go", AllowPublicHTTP: true}
 	if path != "" {
-		f, err := os.Open(path)
+		data, err := os.ReadFile(path)
 		if err != nil {
 			return nil, err
 		}
-		defer f.Close()
-		if err := toml.NewDecoder(f).DisallowUnknownFields().Decode(c); err != nil {
+		// 先粗解析出各键是否出现：allow_* 与 services 遵循"未写即开启"的
+		// 缺省策略，显式写入的值（包括 false）一律以文件为准。
+		var raw map[string]any
+		if err := toml.Unmarshal(data, &raw); err != nil {
 			return nil, err
 		}
+		dec := toml.NewDecoder(bytes.NewReader(data))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(c); err != nil {
+			return nil, err
+		}
+		applyDefaults(c, raw)
 	}
 	for key, dst := range map[string]*string{"HOST": &c.Host, "ADMIN_USER": &c.AdminUser, "PASS_HASH": &c.PasswordHash, "TLS_CERT": &c.TLSCert, "TLS_KEY": &c.TLSKey, "PUBLIC_ORIGIN": &c.PublicOrigin, "LOG_FILE": &c.LogFile, "UPDATE_REPO": &c.UpdateRepo, "UPDATE_MIRROR": &c.UpdateMirror} {
 		if v, ok := os.LookupEnv("LP_" + key); ok {
@@ -179,6 +191,31 @@ func LoadConfig(path string) (*Config, error) {
 		}
 	}
 	return c, nil
+}
+
+// applyDefaults 落实"部署即全功能"的缺省策略：[helper] 段内未显式写入的
+// allow_* 开关与 services 白名单一律按开启处理；显式写入的值（包括 false
+// 与空的 [helper.services] 表）保持管理员的决定。
+func applyDefaults(c *Config, raw map[string]any) {
+	if c.Helper == nil {
+		return
+	}
+	section, _ := raw["helper"].(map[string]any)
+	for key, dst := range map[string]*bool{
+		"allow_firewall":  &c.Helper.AllowFirewall,
+		"allow_kill":      &c.Helper.AllowKill,
+		"allow_update":    &c.Helper.AllowUpdate,
+		"allow_sites":     &c.Helper.AllowSites,
+		"allow_apps":      &c.Helper.AllowApps,
+		"allow_databases": &c.Helper.AllowDatabases,
+	} {
+		if _, ok := section[key]; !ok {
+			*dst = true
+		}
+	}
+	if _, ok := section["services"]; !ok && c.Helper.Services == nil {
+		c.Helper.Services = map[string][]string{"*": {"start", "stop", "restart"}}
+	}
 }
 
 func validateHelper(h *HelperConfig) error {
