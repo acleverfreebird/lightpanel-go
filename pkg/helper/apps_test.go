@@ -36,14 +36,14 @@ func TestAppInstallSteps(t *testing.T) {
 		manager, app string
 		want         [][]string
 	}{
-		{"apt-get", "nginx", [][]string{{"apt-get", "update"}, {"apt-get", "install", "-y", "nginx"}}},
-		{"apt-get", "apache", [][]string{{"apt-get", "update"}, {"apt-get", "install", "-y", "apache2"}}},
-		{"apt-get", "docker", [][]string{{"apt-get", "update"}, {"apt-get", "install", "-y", "docker.io"}}},
-		{"apt-get", "certbot", [][]string{{"apt-get", "update"}, {"apt-get", "install", "-y", "certbot"}}},
-		{"apt-get", "mysql", [][]string{{"apt-get", "update"}, {"apt-get", "install", "-y", "mysql-server"}}},
-		{"apt-get", "mariadb", [][]string{{"apt-get", "update"}, {"apt-get", "install", "-y", "mariadb-server"}}},
+		{"apt-get", "nginx", [][]string{{"apt-get", "-o", aptSandboxOpt, "update"}, {"apt-get", "-o", aptSandboxOpt, "install", "-y", "nginx"}}},
+		{"apt-get", "apache", [][]string{{"apt-get", "-o", aptSandboxOpt, "update"}, {"apt-get", "-o", aptSandboxOpt, "install", "-y", "apache2"}}},
+		{"apt-get", "docker", [][]string{{"apt-get", "-o", aptSandboxOpt, "update"}, {"apt-get", "-o", aptSandboxOpt, "install", "-y", "docker.io"}}},
+		{"apt-get", "certbot", [][]string{{"apt-get", "-o", aptSandboxOpt, "update"}, {"apt-get", "-o", aptSandboxOpt, "install", "-y", "certbot"}}},
+		{"apt-get", "mysql", [][]string{{"apt-get", "-o", aptSandboxOpt, "update"}, {"apt-get", "-o", aptSandboxOpt, "install", "-y", "mysql-server"}}},
+		{"apt-get", "mariadb", [][]string{{"apt-get", "-o", aptSandboxOpt, "update"}, {"apt-get", "-o", aptSandboxOpt, "install", "-y", "mariadb-server"}}},
 		{"dnf", "postgresql", [][]string{{"dnf", "install", "-y", "postgresql-server"}}},
-		{"apt-get", "redis", [][]string{{"apt-get", "update"}, {"apt-get", "install", "-y", "redis-server"}}},
+		{"apt-get", "redis", [][]string{{"apt-get", "-o", aptSandboxOpt, "update"}, {"apt-get", "-o", aptSandboxOpt, "install", "-y", "redis-server"}}},
 		{"apk", "mariadb", [][]string{{"apk", "add", "mariadb"}}},
 		{"dnf", "apache", [][]string{{"dnf", "install", "-y", "httpd"}}},
 		{"yum", "apache", [][]string{{"yum", "install", "-y", "httpd"}}},

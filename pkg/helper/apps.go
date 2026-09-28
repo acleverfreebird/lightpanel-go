@@ -79,6 +79,10 @@ func ValidPackageManager(manager string) bool {
 	return false
 }
 
+// aptSandboxOpt disables apt's download sandbox (drop to _apt, uid 42),
+// which fails with "seteuid 42 failed" in containers lacking CAP_SETUID.
+const aptSandboxOpt = "APT::Sandbox::User=root"
+
 // AppInstallSteps builds the complete, whitelisted argv sequence to install
 // app with manager. Nothing here accepts panel-supplied strings beyond the
 // app key, and the package name always comes from this catalog. apt-get
@@ -98,9 +102,12 @@ func AppInstallSteps(manager, app string) ([][]string, error) {
 	}
 	switch manager {
 	case "apt-get":
+		// APT::Sandbox::User=root stops apt from dropping privileges to the
+		// _apt user (uid 42) for downloads; in unprivileged containers
+		// (no CAP_SETUID) that seteuid fails and every fetch method dies.
 		return [][]string{
-			{"apt-get", "update"},
-			{"apt-get", "install", "-y", pkg},
+			{"apt-get", "-o", aptSandboxOpt, "update"},
+			{"apt-get", "-o", aptSandboxOpt, "install", "-y", pkg},
 		}, nil
 	case "dnf", "yum":
 		return [][]string{{manager, "install", "-y", pkg}}, nil

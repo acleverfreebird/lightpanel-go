@@ -87,7 +87,7 @@ func TestAppInstallStepsRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(steps) != 2 || steps[1][0] != "apt-get" || steps[1][1] != "install" || steps[1][3] != "nginx" {
+	if len(steps) != 2 || steps[1][0] != "apt-get" || steps[1][3] != "install" || steps[1][5] != "nginx" {
 		t.Fatalf("unexpected apt-get steps: %v", steps)
 	}
 }
