@@ -8,7 +8,7 @@
   <link rel="stylesheet" href="/static/app.css">
   <script type="module" src="/static/app.js"></script>
 </head>
-<body data-readonly="{{.ReadOnly}}" data-max-upload="{{.UploadMB}}" data-version="{{.Version}}">
+<body data-readonly="{{.ReadOnly}}" data-max-upload="{{.UploadMB}}" data-version="{{.Version}}" data-terminal-enabled="{{.TerminalEnabled}}" data-terminal-ready="{{.TerminalReady}}">
   <a class="skip-link" href="#workspace">跳到主内容</a>
   <aside class="sidebar">
     <a class="brand" href="#overview"><span class="brand-mark" aria-hidden="true">↳</span>LightPanel<span class="brand-dot"></span></a>
@@ -24,6 +24,7 @@
       <button data-tab="processes"><span data-icon="processes" aria-hidden="true"></span>进程管理</button>
       <button data-tab="services"><span data-icon="services" aria-hidden="true"></span>系统服务</button>
       <button data-tab="logs"><span data-icon="logs" aria-hidden="true"></span>系统日志</button>
+      <button data-tab="terminal"><span data-icon="logs" aria-hidden="true"></span>Web Terminal</button>
       <button data-tab="firewall"><span data-icon="firewall" aria-hidden="true"></span>防火墙</button>
       <button id="task-center-open" type="button" class="task-nav" aria-haspopup="dialog" aria-controls="task-dialog"><span data-icon="tasks" aria-hidden="true"></span>任务中心<span id="task-count" class="task-count" hidden>0</span></button>
     </nav>
@@ -37,6 +38,17 @@
       {{if .ReadOnly}}<div class="notice">当前为只读模式。你可以查看数据、日志和下载文件，修改操作已禁用。</div>{{end}}
       <div id="message" role="status" aria-live="polite" hidden><span id="message-text"></span><button id="message-close" type="button" aria-label="关闭提示">×</button></div>
       <div id="loading" class="loading-indicator" role="status" hidden>正在更新数据…</div>
+      <section id="terminal" aria-label="Web Terminal" hidden>
+        <article class="panel">
+          <h2>高风险交互终端</h2>
+          <p>命令以面板服务账号运行。此终端不是隔离沙箱；root 部署下命令具有 root 权限。</p>
+          <p>纯文本模式适用于命令与交互提示，不支持 vim、top 等全屏应用。离开页面会断开连接。</p>
+          <p id="terminal-status" role="status">未连接</p>
+          <div class="page-tools"><button id="terminal-connect" type="button">连接终端</button><button id="terminal-disconnect" type="button" class="secondary" disabled>断开</button><button id="terminal-interrupt" type="button" class="secondary" disabled>Ctrl+C</button><button id="terminal-eof" type="button" class="secondary" disabled>Ctrl+D</button></div>
+          <pre id="terminal-output" aria-label="终端输出" tabindex="0"></pre>
+          <form id="terminal-form"><label for="terminal-input">终端输入（Enter 发送，Shift+Enter 换行）</label><textarea id="terminal-input" rows="2" maxlength="4095" spellcheck="false" autocomplete="off" disabled></textarea><button id="terminal-send" type="submit" disabled>发送</button></form>
+        </article>
+      </section>
       <section id="overview" aria-label="系统概览">
         <div class="host-banner"><div><span class="host-icon" data-icon="services" aria-hidden="true"></span><div><span class="host-kicker">SERVER / 当前主机</span><h2 id="host">正在连接服务器</h2><p id="host-subtitle">读取主机信息后显示资源状态</p></div></div><div class="banner-meta"><span class="badge" id="resource-status">等待采样</span><label class="toggle-label"><input id="auto-refresh" type="checkbox" checked>实时更新</label></div></div>
         <div id="metrics" class="cards"><article class="metric-card skeleton">正在读取 CPU…</article><article class="metric-card skeleton">正在读取内存…</article><article class="metric-card skeleton">正在读取磁盘…</article><article class="metric-card skeleton">正在读取网络…</article></div>

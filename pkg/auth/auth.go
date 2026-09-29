@@ -21,6 +21,8 @@ import (
 type session struct {
 	CSRF    string
 	Expires time.Time
+	ID      string
+	Done    chan struct{}
 }
 type attempt struct {
 	Count int
@@ -46,6 +48,20 @@ func randomToken() string {
 	return hex.EncodeToString(b)
 }
 func CSRF(r *http.Request) string { s, _ := r.Context().Value(contextKey{}).(session); return s.CSRF }
+
+// Identity is only available after Require. Never log ID, which is a credential.
+func Identity(r *http.Request) (string, time.Time, <-chan struct{}) {
+	s, _ := r.Context().Value(contextKey{}).(session)
+	return s.ID, s.Expires, s.Done
+}
+func (a *Auth) revokeLocked(id string) {
+	if s, ok := a.sessions[id]; ok {
+		if s.Done != nil {
+			close(s.Done)
+		}
+		delete(a.sessions, id)
+	}
+}
 func clientIP(r *http.Request) string {
 	h, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
@@ -91,7 +107,7 @@ func mustHost(origin string) string {
 func (a *Auth) cleanLocked(now time.Time) {
 	for k, s := range a.sessions {
 		if !now.Before(s.Expires) {
-			delete(a.sessions, k)
+			a.revokeLocked(k)
 		}
 	}
 	for k, v := range a.attempts {
@@ -112,7 +128,7 @@ func (a *Auth) Require(next http.Handler) http.Handler {
 			a.mu.Lock()
 			s, ok = a.sessions[c.Value]
 			if ok && !time.Now().Before(s.Expires) {
-				delete(a.sessions, c.Value)
+				a.revokeLocked(c.Value)
 				ok = false
 			}
 			a.mu.Unlock()
@@ -125,6 +141,7 @@ func (a *Auth) Require(next http.Handler) http.Handler {
 			}
 			return
 		}
+		s.ID = c.Value
 		if r.Method != "GET" && r.Method != "HEAD" {
 			if a.cfg.ReadOnly && r.URL.Path != "/logout" {
 				http.Error(w, "read-only account", 403)
@@ -193,11 +210,11 @@ func (a *Auth) Login(t *template.Template) http.HandlerFunc {
 			return
 		}
 		id := randomToken()
-		s := session{CSRF: randomToken(), Expires: now.Add(8 * time.Hour)}
+		s := session{CSRF: randomToken(), Expires: now.Add(8 * time.Hour), Done: make(chan struct{})}
 		a.mu.Lock()
 		delete(a.attempts, ip)
 		if c, e := r.Cookie("lp_session"); e == nil {
-			delete(a.sessions, c.Value)
+			a.revokeLocked(c.Value)
 		}
 		a.sessions[id] = s
 		a.mu.Unlock()
@@ -209,7 +226,7 @@ func (a *Auth) Login(t *template.Template) http.HandlerFunc {
 func (a *Auth) Logout(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie("lp_session"); err == nil {
 		a.mu.Lock()
-		delete(a.sessions, c.Value)
+		a.revokeLocked(c.Value)
 		a.mu.Unlock()
 	}
 	http.SetCookie(w, a.cookie("", -1))

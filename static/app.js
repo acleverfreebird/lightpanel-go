@@ -10,10 +10,12 @@ import { apps, setupApps } from './apps.js';
 import { setupTasks } from './tasks.js';
 import { setupUpdate } from './update.js';
 import { hydrateIcons } from './icons.js';
+import { setupTerminal } from './terminal.js';
 
 hydrateIcons();
 
 const pageKickers = {
+  terminal: 'SECURITY / 高风险终端',
   overview: 'OVERVIEW / 系统总览', processes: 'OPERATIONS / 进程',
   services: 'OPERATIONS / 服务', apps: 'DEPLOY / 应用', sites: 'DEPLOY / 站点',
   databases: 'DEPLOY / 数据', files: 'OPERATIONS / 文件',
@@ -21,6 +23,7 @@ const pageKickers = {
 };
 
 const pages = {
+  terminal: ['Web Terminal', '以面板服务账号执行命令；会话受连接额度、超时和审计约束。', async () => {}],
   overview: ['系统概览', '掌握资源使用情况，让每一次运维都有据可循。', () => Promise.all([overview(), diagnostics()])],
   processes: ['进程管理', '定位资源占用，安全地管理正在运行的进程。', processes],
   services: ['系统服务', '快速筛选服务状态，查看详情并执行维护操作。', services],
@@ -94,6 +97,7 @@ $('.skip-link').addEventListener('click', event => {
 $('#refresh').addEventListener('click', guard(() => { message(''); return refresh(); }));
 $('#message-close').addEventListener('click', () => message(''));
 setupProcesses(); setupServices(go); setupFiles(); setupTools(); setupApps(); setupSites(go); setupDatabases(); setupUpdate(); setupTasks();
+setupTerminal();
 if (readOnly) document.querySelectorAll('[data-mutation]').forEach(control => { control.disabled = true; control.title = '当前账号只有查看权限'; });
 $('#auto-refresh').addEventListener('change', () => { if ($('#auto-refresh').checked && current === 'overview') refresh(); });
 setInterval(() => { if (!document.hidden && current === 'overview' && $('#auto-refresh').checked) refresh(); }, 3000);

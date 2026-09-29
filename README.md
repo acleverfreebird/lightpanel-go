@@ -10,7 +10,7 @@
 - 原生 JS + 服务端页面模板 + 同源 JSON API；相比 HTMX + Alpine.js 少两个运行时资源，使用 CSP 禁止内联脚本。
 - `os.Root` 钉住 `/` 根目录句柄，文件管理全程走 openat 而非字符串路径拼接，`..` 组件直接拒绝。Go 1.25 是项目最低编译版本。
 - `bcrypt` 保存密码哈希；256 位随机 session 和 CSRF token；不需要 JWT 密钥、SQLite 或持久 session。重启使全部 session 失效。
-- 四个直接模块依赖：`go-toml/v2`、`x/crypto`、`x/sys`、`x/term`。后者仅用于终端隐藏输入密码。`CGO_ENABLED=0` 可编译运行产物。
+- 六个直接模块依赖：`go-toml/v2`、`x/crypto`、`x/sys`、`x/term`、`gorilla/websocket`、`creack/pty`。`x/term` 用于隐藏输入密码；Web Terminal 使用 WebSocket 与 Linux PTY。`CGO_ENABLED=0` 可编译运行产物。
 - Linux `/proc` / `statfs` 获取指标；systemd 和防火墙通过已安装的系统命令调用，没有 `sh -c`。
 
 ### 目录结构
@@ -55,7 +55,7 @@ docs/VALIDATION.md           验证记录与已知限制
 
 ### MVP 范围
 
-已实现：系统概览（指标趋势、主机信息、运行诊断）、进程搜索/分页/结束、systemd 服务管理（已加载与已安装单元、启停/重启/重载/开机自启）、全盘文件浏览/上传/下载/新建文件夹/重命名/在线编辑/递归删除/权限、版本检查与一键更新、单管理员登录和可选只读权限、系统/服务日志、防火墙端口规则、站点管理（自动识别 Nginx/Apache/Docker/certbot，浏览已配置站点，创建静态站点、反向代理或 Docker 容器部署，Let's Encrypt 证书签发，受控删除与重载）、应用商店（通过系统软件包管理器一键安装/卸载 Nginx/Apache/Docker/certbot/MySQL/MariaDB/PostgreSQL/Redis，安装与卸载均为后台任务并可查看进度与输出）、数据库管理（自动识别 MySQL/MariaDB/PostgreSQL/Redis，查看库与用户，建库/删库、创建用户与修改密码，引擎启停）。Web 终端是需求中的可选项，本版不包含，`/ws/terminal` 返回 404。
+已实现：系统概览（指标趋势、主机信息、运行诊断）、进程搜索/分页/结束、systemd 服务管理（已加载与已安装单元、启停/重启/重载/开机自启）、全盘文件浏览/上传/下载/新建文件夹/重命名/在线编辑/递归删除/权限、版本检查与一键更新、单管理员登录和可选只读权限、系统/服务日志、防火墙端口规则、站点管理（自动识别 Nginx/Apache/Docker/certbot，浏览已配置站点，创建静态站点、反向代理或 Docker 容器部署，Let's Encrypt 证书签发，受控删除与重载）、应用商店（通过系统软件包管理器一键安装/卸载 Nginx/Apache/Docker/certbot/MySQL/MariaDB/PostgreSQL/Redis，安装与卸载均为后台任务并可查看进度与输出）、数据库管理（自动识别 MySQL/MariaDB/PostgreSQL/Redis，查看库与用户，建库/删库、创建用户与修改密码，引擎启停）。Web Terminal 作为独立高风险模块默认开启：严格固定 Origin、短时一次性票据、PTY 配额、输入输出上限、会话超时与生命周期审计。通配 public_origin 下拒绝终端连接，须设置实际访问地址；详见 [Web Terminal 安全边界与部署](docs/WEB-TERMINAL.md)。
 
 安全边界：这是有权限的主机管理工具，不是多租户容器。文件管理面向**整个文件系统**：所有接口只接受绝对路径，`..` 组件、反斜杠与 NUL 一律拒绝；`/proc`、`/sys`、`/dev`、`/run` 这四个虚拟系统目录拒绝删除与移动。下载/编辑读取只接受普通文件（符号链接若最终指向普通文件也可下载）；chmod 只接受普通文件与目录，且拒绝 setuid/setgid 与符号链接；只允许普通文件上传，禁止覆盖；目录删除默认要求为空，带 `recursive=true` 时递归删除且不允许删除根；在线编辑只处理 ≤1 MiB 且不含 NUL 的普通文件，保存先写临时文件再原子替换，且拒绝以符号链接为目标的写入。进程以 root 运行时这些接口等同 root 文件权限；默认的最小特权模式下面板以专用非特权用户 `lightpanel` 运行（见「最小特权 helper」），文件接口仅等同该用户权限。无论哪种模式，请务必启用 TLS/反代并保管好管理员密码。
 

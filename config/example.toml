@@ -13,6 +13,10 @@ max_upload_mb = 32
 # 放行；配置了域名或固定 IP 的 public_origin 时恢复严格同源校验。
 public_origin = "http://0.0.0.0:8888"
 read_only = false
+# 独立高风险 Web Terminal，默认开启；只读账号始终拒绝。
+# 必须将 public_origin 设为实际访问的固定 http(s)://host[:port]，
+# 终端不接受通配 origin、缺失 Origin 或 Referer 替代。
+terminal_enabled = true
 # allow_public_http 允许在非 loopback 地址（如上面的 0.0.0.0）上以明文 HTTP
 # 对外提供面板，缺省开启。公网明文传输会暴露凭据与会话，生产环境建议改用
 # TLS 或本机反向代理终止 HTTPS；如需关闭，取消下一行注释（保留 false 值）。

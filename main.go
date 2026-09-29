@@ -169,6 +169,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	defer handler.(*panelHandler).Close()
 	server := &http.Server{Addr: net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port)), Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 60 * time.Second, WriteTimeout: 60 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10, TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12}}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -191,6 +192,8 @@ func run() error {
 	}
 	shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	// HTTP Shutdown does not close hijacked WebSockets.
+	handler.(*panelHandler).Close()
 	if err := server.Shutdown(shutdown); err != nil {
 		_ = server.Close()
 		return err

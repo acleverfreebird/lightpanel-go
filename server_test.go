@@ -123,7 +123,7 @@ func TestPanelRoutesAndFileWorkflow(t *testing.T) {
 	if w := request(h, "POST", "/api/file/delete", "path="+url.QueryEscape(demo), c, csrf); w.Code != 200 {
 		t.Fatal(w.Code)
 	}
-	for _, p := range []string{"/not-found", "/ws/terminal"} {
+	for _, p := range []string{"/not-found"} {
 		if w := request(h, "GET", p, "", c, ""); w.Code != 404 {
 			t.Fatal("unexpected catchall")
 		}

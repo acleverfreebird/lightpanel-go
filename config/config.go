@@ -26,6 +26,8 @@ type Config struct {
 	TLSCert      string `toml:"tls_cert"`
 	TLSKey       string `toml:"tls_key"`
 	PublicOrigin string `toml:"public_origin"`
+	// Nil preserves the default-on policy for old configurations.
+	TerminalEnabled *bool `toml:"terminal_enabled"`
 	// AllowPublicHTTP 允许在非 loopback 地址（如 0.0.0.0）上以明文 HTTP 对外
 	// 提供面板。缺省开启（配置文件与环境变量均未出现该键时视为 true）；
 	// 显式写 allow_public_http = false 可关闭。公网明文传输会暴露凭据与会话，
@@ -113,6 +115,13 @@ func LoadConfig(path string) (*Config, error) {
 			return nil, err
 		}
 		c.ReadOnly = b
+	}
+	if v, ok := os.LookupEnv("LP_TERMINAL_ENABLED"); ok {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return nil, fmt.Errorf("LP_TERMINAL_ENABLED: %w", err)
+		}
+		c.TerminalEnabled = &b
 	}
 	if v, ok := os.LookupEnv("LP_ALLOW_PUBLIC_HTTP"); ok {
 		b, err := strconv.ParseBool(v)

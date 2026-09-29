@@ -3,10 +3,12 @@
 package main
 
 import (
+	"bufio"
 	"embed"
 	"html/template"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -15,7 +17,15 @@ import (
 	"lightpanel/config"
 	"lightpanel/pkg/auth"
 	"lightpanel/pkg/sysinfo"
+	"lightpanel/pkg/terminal"
 )
+
+type panelHandler struct {
+	http.Handler
+	terminal *terminal.Manager
+}
+
+func (p *panelHandler) Close() { p.terminal.Close() }
 
 //go:embed templates/*.html static/*
 var embeddedFiles embed.FS
@@ -30,14 +40,17 @@ func newHandler(cfg *config.Config, files *sysinfo.Files, manager *sysinfo.Manag
 		return nil, err
 	}
 	a := auth.New(cfg)
+	terminals := terminal.New(cfg)
 	mux := http.NewServeMux()
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(static))))
 	mux.HandleFunc("GET /login", a.Login(tmpl))
 	mux.HandleFunc("POST /login", a.Login(tmpl))
+	mux.Handle("POST /api/terminal/ticket", terminals.Gate(a.Require(http.HandlerFunc(terminals.Ticket))))
+	mux.Handle("GET /ws/terminal", terminals.Gate(a.Require(http.HandlerFunc(terminals.Connect))))
 	register := func(pattern string, h http.HandlerFunc) { mux.Handle(pattern, a.Require(audit(cfg.AdminUser, h))) }
 	register("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if err := tmpl.ExecuteTemplate(w, "index.html", map[string]any{"User": cfg.AdminUser, "CSRF": auth.CSRF(r), "ReadOnly": cfg.ReadOnly, "UploadMB": files.UploadLimit() >> 20, "Version": sysinfo.BuildVersion}); err != nil {
+		if err := tmpl.ExecuteTemplate(w, "index.html", map[string]any{"User": cfg.AdminUser, "CSRF": auth.CSRF(r), "ReadOnly": cfg.ReadOnly, "TerminalEnabled": cfg.TerminalOn(), "TerminalReady": !cfg.WildcardOrigin(), "UploadMB": files.UploadLimit() >> 20, "Version": sysinfo.BuildVersion}); err != nil {
 			slog.Error("render", "error", err)
 		}
 	})
@@ -83,7 +96,7 @@ func newHandler(cfg *config.Config, files *sysinfo.Files, manager *sysinfo.Manag
 	register("POST /api/databases/delete", databases.DBDrop)
 	register("POST /api/databases/user", databases.DBUserCreate)
 	register("POST /api/databases/user-password", databases.DBUserPassword)
-	return security(cfg, files.UploadLimit(), mux), nil
+	return &panelHandler{Handler: security(cfg, files.UploadLimit(), mux), terminal: terminals}, nil
 }
 
 type statusWriter struct {
@@ -104,6 +117,13 @@ func (w *statusWriter) Write(b []byte) (int, error) {
 	return w.ResponseWriter.Write(b)
 }
 func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+func (w *statusWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	c, rw, err := http.NewResponseController(w.ResponseWriter).Hijack()
+	if err == nil {
+		w.status = http.StatusSwitchingProtocols
+	}
+	return c, rw, err
+}
 func audit(user string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Metrics and process polling do not flood logs. File/log reads are sensitive.
