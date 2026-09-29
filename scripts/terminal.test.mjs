@@ -38,7 +38,7 @@ function harness({ readOnly = false, enabled = true } = {}) {
   const context = vm.createContext({ $, guard: fn => fn, readOnly,
     // Host-realm globals: the module does `instanceof ArrayBuffer` on message
     // payloads the test creates outside the vm, so both sides must agree.
-    ArrayBuffer, Terminal, FitAddon, ResizeObserver, WebSocket, URL, location,
+    ArrayBuffer, TextEncoder, Terminal, FitAddon, ResizeObserver, WebSocket, URL, location,
     document: { body: { dataset: { terminalEnabled: String(enabled) } } },
     window: { addEventListener(name, fn) { events[name] = fn; } },
   });
@@ -57,9 +57,10 @@ test('connect opens a plain session websocket and streams both ways', async () =
   ws.open();
   assert.equal($('#terminal-status').textContent, '已连接');
   keystroke('echo hello\r');
-  assert.deepEqual(ws.sent, ['echo hello\r']);
+  assert.equal(new TextDecoder().decode(ws.sent[0]), 'echo hello\r');
   resize(30, 120);
-  assert.deepEqual(ws.sent, ['echo hello\r', JSON.stringify({ type: 'resize', rows: 30, cols: 120 })]);
+  assert.equal(new TextDecoder().decode(ws.sent[0]), 'echo hello\r');
+  assert.equal(ws.sent[1], JSON.stringify({ type: 'resize', rows: 30, cols: 120 }));
   ws.onmessage({ data: new TextEncoder().encode('hello\n').buffer });
   assert.equal(new TextDecoder().decode(writes.at(-1)), 'hello\n');
   $('#terminal-disconnect').handlers.click();

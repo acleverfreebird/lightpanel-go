@@ -7,11 +7,14 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/gorilla/websocket"
+	"golang.org/x/crypto/bcrypt"
+	"lightpanel/config"
 )
 
 // The Web Shell authenticates with the panel login session itself: no ticket
@@ -48,14 +51,45 @@ func TestTerminalWebSocketAndRevocation(t *testing.T) {
 	previous := slog.Default()
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
 	defer slog.SetDefault(previous)
-	h, _ := testPanel(t, false)
+	hash, _ := bcrypt.GenerateFromPassword([]byte("testing-password-long"), 10)
+	cfg := &config.Config{AdminUser: "admin", PasswordHash: string(hash), Host: "0.0.0.0", Port: 8888, PublicOrigin: "http://0.0.0.0:8888"}
+	h, err := panelWithConfig(t, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer h.(*panelHandler).Close()
-	c, csrf := login(t, h)
 	server := httptest.NewServer(h)
 	defer server.Close()
+	serverHost := strings.TrimPrefix(server.URL, "http://")
+	// Login via the real server Host so the security middleware accepts it.
+	loginReq := httptest.NewRequest("POST", server.URL+"/login", strings.NewReader("username=admin&password=testing-password-long"))
+	loginReq.Host = serverHost
+	loginReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	loginReq.Header.Set("Origin", "http://"+serverHost)
+	loginW := httptest.NewRecorder()
+	h.ServeHTTP(loginW, loginReq)
+	if loginW.Code != 303 {
+		t.Fatalf("login %d %s", loginW.Code, loginW.Body)
+	}
+	c := loginW.Result().Cookies()[0]
+	// Retrieve CSRF token from the index page.
+	indexReq := httptest.NewRequest("GET", server.URL+"/", nil)
+	indexReq.Host = serverHost
+	indexReq.AddCookie(c)
+	indexW := httptest.NewRecorder()
+	h.ServeHTTP(indexW, indexReq)
+	if indexW.Code != 200 {
+		t.Fatal(indexW.Code)
+	}
+	csrfMatch := regexp.MustCompile(`name="csrf-token" content="([a-f0-9]+)"`).FindStringSubmatch(indexW.Body.String())
+	if len(csrfMatch) != 2 {
+		t.Fatal("missing csrf meta")
+	}
+	csrf := csrfMatch[1]
+
 	d := websocket.Dialer{HandshakeTimeout: 5 * time.Second}
 	url := "ws" + strings.TrimPrefix(server.URL, "http") + "/ws/terminal"
-	header := http.Header{"Origin": {server.URL}, "Cookie": {c.String()}}
+	header := http.Header{"Origin": {"http://" + serverHost}, "Cookie": {c.String()}}
 	ws, resp, err := d.Dial(url, header)
 	if err != nil {
 		t.Fatalf("upgrade: %v %+v", err, resp)
@@ -75,8 +109,16 @@ func TestTerminalWebSocketAndRevocation(t *testing.T) {
 	}
 	// Logging out revokes the login session the shell runs on, closing the
 	// live websocket with the revocation reason.
-	if w := request(h, "POST", "/logout", "", c, csrf); w.Code != 303 {
-		t.Fatalf("logout %d %s", w.Code, w.Body)
+	logoutReq := httptest.NewRequest("POST", server.URL+"/logout", strings.NewReader(""))
+	logoutReq.Host = serverHost
+	logoutReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	logoutReq.Header.Set("Origin", "http://"+serverHost)
+	logoutReq.Header.Set("X-CSRF-Token", csrf)
+	logoutReq.AddCookie(c)
+	logoutW := httptest.NewRecorder()
+	h.ServeHTTP(logoutW, logoutReq)
+	if logoutW.Code != 303 {
+		t.Fatalf("logout %d %s", logoutW.Code, logoutW.Body)
 	}
 	ws.SetReadDeadline(time.Now().Add(3 * time.Second))
 	for {

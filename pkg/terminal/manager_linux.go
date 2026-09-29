@@ -71,7 +71,15 @@ func sameOrigin(r *http.Request) bool {
 		return true
 	}
 	u, err := url.Parse(origin)
-	return err == nil && u.Host != "" && u.Host == r.Host
+	if err != nil || u.Host == "" || u.Path != "" {
+		return false
+	}
+	// Origin must match scheme://host of the request exactly.
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	return u.Scheme == scheme && u.Host == r.Host
 }
 
 // Connect upgrades one authenticated request to a WebSocket and serves an

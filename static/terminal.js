@@ -38,7 +38,7 @@ export function setupTerminal() {
       fit = new FitAddon.FitAddon();
       term.loadAddon(fit);
       term.open(container);
-      term.onData(data => { if (socket?.readyState === WebSocket.OPEN) socket.send(data); });
+      term.onData(data => { if (socket?.readyState === WebSocket.OPEN) socket.send(new TextEncoder().encode(data)); });
       term.onResize(({ rows, cols }) => {
         if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'resize', rows, cols }));
       });
