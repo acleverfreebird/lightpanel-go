@@ -408,5 +408,6 @@ body:has(#terminal:not([hidden])) .page-heading { display: none; }
 .terminal-actions button { min-height: 36px; padding: 6px 14px; font-size: 12px; }
 #terminal-container { flex: 1; min-height: 0; background: #101820; border-radius: 10px; padding: 8px 10px; }
 #terminal-container .xterm { height: 100%; }
+#terminal-container .xterm-viewport { background-color: #101820; }
 @media (min-width: 1600px) { .terminal-shell { height: calc(100dvh - 188px); } }
 @media (max-width: 680px) { .terminal-shell { height: calc(100dvh - 152px); min-height: 20rem; } .terminal-note { display: none; } }
