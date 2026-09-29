@@ -42,7 +42,7 @@ func TestAppInstallSteps(t *testing.T) {
 			{Args: []string{"apt-get", "-o", aptSandboxOpt, "install", "-y", "nginx"}},
 		}},
 		{"apt-get", "mysql", []Step{
-			{Args: []string{"sh", "-c", mysqlConfigOverrideScript}},
+			{Args: []string{"sh", "-c", mysqlCompatSetupScript}},
 			{Args: []string{"dpkg", "--configure", "-a"}, Optional: true},
 			{Args: []string{"apt-get", "-o", aptSandboxOpt, "update"}, Optional: true},
 			{Args: []string{"apt-get", "-o", aptSandboxOpt, "install", "-y", "mysql-server"}},
@@ -112,7 +112,11 @@ func TestAppRemoveSteps(t *testing.T) {
 			{Args: []string{"apt-get", "-o", aptSandboxOpt, "purge", "-y", "nginx"}},
 			{Args: []string{"apt-get", "-o", aptSandboxOpt, "autoremove", "-y"}, Optional: true},
 		}},
+		// Only mysql gets the unprivileged-container fixups; removal gets the
+		// compat setup too, because the purge retries the postinst of a
+		// half-configured package.
 		{"apt-get", "mysql", []Step{
+			{Args: []string{"sh", "-c", mysqlCompatSetupScript}},
 			{Args: []string{"dpkg", "--configure", "-a"}, Optional: true},
 			{Args: []string{"apt-get", "-o", aptSandboxOpt, "purge", "-y", "mysql-server"}},
 			{Args: []string{"apt-get", "-o", aptSandboxOpt, "autoremove", "-y"}, Optional: true},

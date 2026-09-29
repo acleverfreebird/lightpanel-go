@@ -104,33 +104,75 @@ func ValidPackageManager(manager string) bool {
 const aptSandboxOpt = "APT::Sandbox::User=root"
 
 // The mysql fixups below exist for the same class of hosts as aptSandboxOpt:
-// containers without CAP_SETUID, where nothing may drop privileges. The
-// mysql-server package is unusable there out of the box — its mysqld.cnf
-// sets user = mysql, so every root-invoked mysqld (the postinst's startup
-// test, the datadir initialization, the service) calls setuid(2) to the
-// mysql user and dies with "setuid: Operation not permitted", leaving dpkg
-// half-configured. mysqld itself handles running as root cleanly: its
-// check_user() (sql/mysqld.cc) skips all privilege changes when the user
-// option is "root" and merely warns and ignores it when not started as root,
-// so pointing it at root breaks nothing else.
+// containers that cannot drop privileges (no CAP_SETUID/CAP_SETGID). The
+// stock mysql-server package cannot configure there, in two separate places:
+// its mysqld.cnf sets user = mysql (so the postinst's startup test
+// "mysqld --verbose --help" calls setuid(2) and aborts), and its postinst
+// passes --user=mysql on the command line (start_server, run_init_sql, the
+// datadir init) — an argument no config file can override. Either failure
+// leaves the package half-configured, and because apt retries the failed
+// postinst inside every later transaction, one broken install wedges all
+// following installs AND uninstalls on the host.
 //
-// All three fixup scripts begin by probing whether privilege dropping works
-// at all (su to nobody). On ordinary hosts the probe succeeds, the script is
-// a no-op and the stock mysql layout is left untouched; only hosts where the
-// probe fails — and the stock layout cannot work — are patched.
+// mysqld itself handles running as root cleanly: check_user() in
+// sql/mysqld.cc returns early for the user option "root" and skips every
+// privilege change, and it merely warns when not started as root. Two
+// cooperating pieces point the package scripts at that:
+//
+//  1. mysqlCompatSetupScript writes user = root into
+//     /etc/mysql/mysql.conf.d/zz-lightpanel.cnf (sorted after the packaged
+//     mysqld.cnf, so it wins) — that fixes config-only invocations — and
+//     installs a dpkg-diverted /usr/sbin/mysqld wrapper that appends
+//     --user=root for root callers, overriding the postinst's command-line
+//     --user=mysql (mysqld resolves repeated scalar options last-wins).
+//     dpkg-divert keeps package upgrades from overwriting the wrapper.
+//  2. mysqlUnitPatchScript switches the systemd unit from User/Group=mysql
+//     to root so systemd's own setuid (equally unavailable there) does not
+//     stop the panel from starting MySQL.
+//
+// mysqlDatadirInitScript then initializes the system tables when the
+// package's own init could not (its "--initialize-insecure --user=mysql" is
+// swallowed by "|| true", leaving an empty datadir behind) and hands
+// root-created files back to the mysql user.
+//
+// The setup and unit scripts begin by probing whether privilege dropping
+// works at all (su to nobody). On ordinary hosts the probe succeeds and
+// nothing is patched; only hosts where the stock layout cannot work are
+// modified.
 
 // mysqlPrivDropProbe succeeds only where setuid(2) is possible at all; on
 // such hosts none of the mysql fixups may apply.
 const mysqlPrivDropProbe = `su -s /bin/sh nobody -c true >/dev/null 2>&1 && exit 0; `
 
-// mysqlConfigOverrideScript makes mysqld run as root when it is started as
-// root. The override sorts after the packaged mysql.conf.d/mysqld.cnf so its
-// user = mysql loses; that lets the package's own postinst startup test and
-// any root-started mysqld get past the setuid drop, which un-wedges dpkg and
-// makes future package upgrades configure cleanly too.
-const mysqlConfigOverrideScript = mysqlPrivDropProbe + `
+// mysqlWrapper becomes /usr/sbin/mysqld while the real binary is diverted to
+// mysqld.distrib. It only adjusts --user for root callers on hosts where the
+// privilege drop itself is broken; everything else passes through. mysqld
+// resolves repeated scalar options last-wins, so appending --user=root
+// overrides any earlier --user=mysql without touching the argument list.
+const mysqlWrapper = `#!/bin/sh
+# lightpanel: installed only on hosts that cannot drop privileges, where
+# mysqld's --user=<name> dies with "setuid: Operation not permitted". mysqld
+# skips every privilege change when the user option is "root" (check_user in
+# sql/mysqld.cc).
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+if [ "$(id -u)" = 0 ] && ! su -s /bin/sh nobody -c true >/dev/null 2>&1; then
+	exec /usr/sbin/mysqld.distrib "$@" --user=root
+fi
+exec /usr/sbin/mysqld.distrib "$@"
+`
+
+// mysqlCompatSetupScript installs the mysqld wrapper and the config override.
+// It runs before any dpkg step in BOTH the install and the remove sequence:
+// remove needs it just as much, because apt retries the half-configured
+// package's postinst inside the purge itself.
+const mysqlCompatSetupScript = mysqlPrivDropProbe + `
+dpkg-divert --local --rename --add --divert /usr/sbin/mysqld.distrib /usr/sbin/mysqld >/dev/null 2>&1 || true
+cat > /usr/sbin/mysqld <<'LIGHTPANEL_WRAPPER'
+` + mysqlWrapper + `LIGHTPANEL_WRAPPER
+chmod 0755 /usr/sbin/mysqld
 mkdir -p /etc/mysql/mysql.conf.d
 printf '[mysqld]\nuser = root\n' > /etc/mysql/mysql.conf.d/zz-lightpanel.cnf
+[ ! -x /usr/sbin/mysqld.distrib ] || /usr/sbin/mysqld --version >/dev/null 2>&1 || exit 1
 `
 
 // mysqlDatadirInitScript initializes the system tables when the package's
@@ -139,7 +181,7 @@ printf '[mysqld]\nuser = root\n' > /etc/mysql/mysql.conf.d/zz-lightpanel.cnf
 // Root-created files are handed back to mysql so they match the layout the
 // package expects.
 const mysqlDatadirInitScript = `if [ ! -d /var/lib/mysql/mysql ]; then
-	mysqld --initialize-insecure --user=root &&
+	/usr/sbin/mysqld --initialize-insecure --user=root &&
 	chown -R mysql:mysql /var/lib/mysql
 fi
 `
@@ -190,13 +232,14 @@ func AppInstallSteps(manager, app string) ([]Step, error) {
 			{Args: []string{"apt-get", "-o", aptSandboxOpt, "install", "-y", pkg}},
 		}
 		if app == "mysql" {
-			// The config override goes first so the leading dpkg repair and
-			// the install's postinst both see a mysqld that can start; the
-			// datadir init and unit patch repair whatever the package's own
-			// scripts had to skip (their --user=mysql calls fail silently
-			// there). See the mysql fixup scripts above for why.
+			// The compat setup goes first so the leading dpkg repair and
+			// the install's postinst both see a mysqld that can start —
+			// this is also what un-wedges a dpkg left half-configured by an
+			// earlier, pre-fix install attempt. The datadir init and unit
+			// patch repair whatever the package's own scripts had to skip.
+			// See the mysql fixup scripts above for why.
 			steps = append([]Step{
-				{Args: []string{"sh", "-c", mysqlConfigOverrideScript}},
+				{Args: []string{"sh", "-c", mysqlCompatSetupScript}},
 			}, steps...)
 			steps = append(steps,
 				Step{Args: []string{"sh", "-c", mysqlDatadirInitScript}},
@@ -219,7 +262,12 @@ func AppInstallSteps(manager, app string) ([]Step, error) {
 // install's leftover conffiles and package state are removed too — the
 // primary use case is recovering from an install that half-configured — and
 // then clears now-orphaned dependencies with autoremove, per Debian's
-// official guidance. dnf/yum follow the same remove + autoremove pattern.
+// official guidance. MySQL removal gets the same compat setup FIRST as the
+// install: a half-configured mysql-server-8.0 is retried by dpkg inside the
+// purge itself (and inside the leading dpkg repair), so on hosts without
+// privilege dropping the removal can only succeed once the mysqld wrapper
+// and config override are in place. dnf/yum follow the same remove +
+// autoremove pattern.
 func AppRemoveSteps(manager, app string) ([]Step, error) {
 	pkg, err := lookupAppPackage(manager, app)
 	if err != nil {
@@ -227,11 +275,17 @@ func AppRemoveSteps(manager, app string) ([]Step, error) {
 	}
 	switch manager {
 	case "apt-get":
-		return []Step{
+		steps := []Step{
 			{Args: []string{"dpkg", "--configure", "-a"}, Optional: true},
 			{Args: []string{"apt-get", "-o", aptSandboxOpt, "purge", "-y", pkg}},
 			{Args: []string{"apt-get", "-o", aptSandboxOpt, "autoremove", "-y"}, Optional: true},
-		}, nil
+		}
+		if app == "mysql" {
+			steps = append([]Step{
+				{Args: []string{"sh", "-c", mysqlCompatSetupScript}},
+			}, steps...)
+		}
+		return steps, nil
 	case "dnf", "yum":
 		return []Step{
 			{Args: []string{manager, "remove", "-y", pkg}},
