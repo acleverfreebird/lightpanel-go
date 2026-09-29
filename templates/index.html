@@ -6,9 +6,12 @@
   <meta name="csrf-token" content="{{.CSRF}}">
   <title>LightPanel · 服务器工作台</title>
   <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/vendor/xterm/xterm.css">
+  <script src="/static/vendor/xterm/xterm.js"></script>
+  <script src="/static/vendor/xterm/addon-fit.js"></script>
   <script type="module" src="/static/app.js"></script>
 </head>
-<body data-readonly="{{.ReadOnly}}" data-max-upload="{{.UploadMB}}" data-version="{{.Version}}" data-terminal-enabled="{{.TerminalEnabled}}" data-terminal-ready="{{.TerminalReady}}">
+<body data-readonly="{{.ReadOnly}}" data-max-upload="{{.UploadMB}}" data-version="{{.Version}}" data-terminal-enabled="{{.TerminalEnabled}}">
   <a class="skip-link" href="#workspace">跳到主内容</a>
   <aside class="sidebar">
     <a class="brand" href="#overview"><span class="brand-mark" aria-hidden="true">↳</span>LightPanel<span class="brand-dot"></span></a>
@@ -40,13 +43,10 @@
       <div id="loading" class="loading-indicator" role="status" hidden>正在更新数据…</div>
       <section id="terminal" aria-label="Web Terminal" hidden>
         <article class="panel">
-          <h2>高风险交互终端</h2>
-          <p>命令以面板服务账号运行。此终端不是隔离沙箱；root 部署下命令具有 root 权限。</p>
-          <p>纯文本模式适用于命令与交互提示，不支持 vim、top 等全屏应用。离开页面会断开连接。</p>
-          <p id="terminal-status" role="status">未连接</p>
-          <div class="page-tools"><button id="terminal-connect" type="button">连接终端</button><button id="terminal-disconnect" type="button" class="secondary" disabled>断开</button><button id="terminal-interrupt" type="button" class="secondary" disabled>Ctrl+C</button><button id="terminal-eof" type="button" class="secondary" disabled>Ctrl+D</button></div>
-          <pre id="terminal-output" aria-label="终端输出" tabindex="0"></pre>
-          <form id="terminal-form"><label for="terminal-input">终端输入（Enter 发送，Shift+Enter 换行）</label><textarea id="terminal-input" rows="2" maxlength="4095" spellcheck="false" autocomplete="off" disabled></textarea><button id="terminal-send" type="submit" disabled>发送</button></form>
+          <h2>Web Shell</h2>
+          <p>完整的交互式终端，直接在浏览器里操作服务器。命令以面板服务账号运行；root 部署下即 root 权限，请谨慎操作。</p>
+          <div class="page-tools"><p id="terminal-status" role="status">未连接</p><button id="terminal-connect" type="button">连接终端</button><button id="terminal-disconnect" type="button" class="secondary" disabled>断开</button></div>
+          <div id="terminal-container" aria-label="终端窗口"></div>
         </article>
       </section>
       <section id="overview" aria-label="系统概览">

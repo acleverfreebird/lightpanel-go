@@ -15,7 +15,7 @@ import { setupTerminal } from './terminal.js';
 hydrateIcons();
 
 const pageKickers = {
-  terminal: 'SECURITY / 高风险终端',
+  terminal: 'OPS / WEB SHELL',
   overview: 'OVERVIEW / 系统总览', processes: 'OPERATIONS / 进程',
   services: 'OPERATIONS / 服务', apps: 'DEPLOY / 应用', sites: 'DEPLOY / 站点',
   databases: 'DEPLOY / 数据', files: 'OPERATIONS / 文件',
@@ -23,7 +23,7 @@ const pageKickers = {
 };
 
 const pages = {
-  terminal: ['Web Terminal', '以面板服务账号执行命令；会话受连接额度、超时和审计约束。', async () => {}],
+  terminal: ['Web Shell', '浏览器里的完整交互式终端，直接操作服务器。', async () => {}],
   overview: ['系统概览', '掌握资源使用情况，让每一次运维都有据可循。', () => Promise.all([overview(), diagnostics()])],
   processes: ['进程管理', '定位资源占用，安全地管理正在运行的进程。', processes],
   services: ['系统服务', '快速筛选服务状态，查看详情并执行维护操作。', services],

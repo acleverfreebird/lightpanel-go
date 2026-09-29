@@ -45,12 +45,14 @@ func newHandler(cfg *config.Config, files *sysinfo.Files, manager *sysinfo.Manag
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(static))))
 	mux.HandleFunc("GET /login", a.Login(tmpl))
 	mux.HandleFunc("POST /login", a.Login(tmpl))
-	mux.Handle("POST /api/terminal/ticket", terminals.Gate(a.Require(http.HandlerFunc(terminals.Ticket))))
-	mux.Handle("GET /ws/terminal", terminals.Gate(a.Require(http.HandlerFunc(terminals.Connect))))
+	// The Web Shell authenticates with the login session cookie like every
+	// other panel route; admission checks (enabled flag, read-only, origin)
+	// live inside Connect.
+	mux.Handle("GET /ws/terminal", a.Require(http.HandlerFunc(terminals.Connect)))
 	register := func(pattern string, h http.HandlerFunc) { mux.Handle(pattern, a.Require(audit(cfg.AdminUser, h))) }
 	register("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if err := tmpl.ExecuteTemplate(w, "index.html", map[string]any{"User": cfg.AdminUser, "CSRF": auth.CSRF(r), "ReadOnly": cfg.ReadOnly, "TerminalEnabled": cfg.TerminalOn(), "TerminalReady": !cfg.WildcardOrigin(), "UploadMB": files.UploadLimit() >> 20, "Version": sysinfo.BuildVersion}); err != nil {
+		if err := tmpl.ExecuteTemplate(w, "index.html", map[string]any{"User": cfg.AdminUser, "CSRF": auth.CSRF(r), "ReadOnly": cfg.ReadOnly, "TerminalEnabled": cfg.TerminalOn(), "UploadMB": files.UploadLimit() >> 20, "Version": sysinfo.BuildVersion}); err != nil {
 			slog.Error("render", "error", err)
 		}
 	})
@@ -189,12 +191,17 @@ func security(cfg *config.Config, uploadLimit int64, next http.Handler) http.Han
 			http.Error(sw, "unrecognized host", 403)
 			return
 		}
-		select {
-		case slots <- struct{}{}:
-			defer func() { <-slots }()
-		default:
-			http.Error(sw, "server busy", 503)
-			return
+		// A WebSocket shell session outlives the handshake by hours; taking a
+		// concurrency slot for its whole lifetime would let a few terminal
+		// tabs starve the panel's normal requests.
+		if r.URL.Path != "/ws/terminal" {
+			select {
+			case slots <- struct{}{}:
+				defer func() { <-slots }()
+			default:
+				http.Error(sw, "server busy", 503)
+				return
+			}
 		}
 		limit := int64(16 << 10)
 		switch r.URL.Path {

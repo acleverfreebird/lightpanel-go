@@ -16,12 +16,9 @@ import (
 	"lightpanel/config"
 )
 
-func runtimeSocket(t *testing.T, idle, lifetime time.Duration) (*Manager, *websocket.Conn, chan struct{}, <-chan struct{}) {
+func runtimeSocket(t *testing.T, revoked chan struct{}) (*Manager, *websocket.Conn, <-chan struct{}) {
 	t.Helper()
 	m := New(&config.Config{AdminUser: "test"})
-	m.idle = idle
-	m.lifetime = lifetime
-	revoked := make(chan struct{})
 	finished := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ws, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
@@ -30,57 +27,36 @@ func runtimeSocket(t *testing.T, idle, lifetime time.Duration) (*Manager, *webso
 		}
 		defer ws.Close()
 		defer close(finished)
-		if !m.reserve("test") {
-			return
-		}
-		defer m.release("test")
-		m.run(r, ws, time.Now().Add(time.Hour), revoked)
+		m.run(r, ws, revoked)
 	}))
 	ws, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { ws.Close(); m.Close(); server.Close() })
-	return m, ws, revoked, finished
+	return m, ws, finished
 }
 
-func TestOutputLimitAndOutputDoesNotExtendIdle(t *testing.T) {
-	for _, tc := range []struct {
-		name, command, reason string
-		idle                  time.Duration
-	}{
-		{"output_limit", "yes OUTPUT\r", "output_limit", time.Minute},
-		{"output_idle", "while :; do printf tick; sleep 0.01; done\r", "idle_timeout", 100 * time.Millisecond},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			_, ws, _, finished := runtimeSocket(t, tc.idle, time.Minute)
-			if err := ws.WriteMessage(websocket.BinaryMessage, []byte(tc.command)); err != nil {
-				t.Fatal(err)
-			}
-			if reason := readUntilClosed(t, ws); reason != tc.reason {
-				t.Fatalf("want %s got %s", tc.reason, reason)
-			}
-			waitClosed(t, finished)
-		})
-	}
-}
-
-func TestPTYJobCleanupAndResize(t *testing.T) {
-	_, ws, _, finished := runtimeSocket(t, time.Minute, time.Minute)
+func TestPTYResizeAndJobCleanup(t *testing.T) {
+	_, ws, finished := runtimeSocket(t, make(chan struct{}))
 	if err := ws.WriteMessage(websocket.TextMessage, []byte(`{"type":"resize","rows":32,"cols":100}`)); err != nil {
 		t.Fatal(err)
 	}
-	if err := ws.WriteMessage(websocket.BinaryMessage, []byte("sleep 120 & printf 'CHILD:%s\\n' $!; wait\r")); err != nil {
+	// Unknown control frames are ignored, not fatal.
+	if err := ws.WriteMessage(websocket.TextMessage, []byte(`{"type":"ping"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.WriteMessage(websocket.BinaryMessage, []byte("stty size; sleep 120 & printf 'CHILD:%s\\n' $!; wait\r")); err != nil {
 		t.Fatal(err)
 	}
 	var output bytes.Buffer
 	var pid string
 	pattern := regexp.MustCompile(`CHILD:([0-9]+)`)
 	ws.SetReadDeadline(time.Now().Add(3 * time.Second))
-	for pid == "" {
+	for pid == "" || !strings.Contains(output.String(), "32 100") {
 		_, b, err := ws.ReadMessage()
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("output so far: %q", output.String())
 		}
 		output.Write(b)
 		match := pattern.FindStringSubmatch(output.String())
@@ -100,46 +76,9 @@ func TestPTYJobCleanupAndResize(t *testing.T) {
 	}
 }
 
-func TestInputLimit(t *testing.T) {
-	_, ws, _, finished := runtimeSocket(t, time.Minute, time.Minute)
-	if err := ws.WriteMessage(websocket.BinaryMessage, []byte("stty -echo; cat >/dev/null\r")); err != nil {
-		t.Fatal(err)
-	}
-	// Drain output concurrently so only the input cap can terminate the session.
-	closed := make(chan string, 1)
-	go func() {
-		for {
-			_, _, err := ws.ReadMessage()
-			if err != nil {
-				if e, ok := err.(*websocket.CloseError); ok {
-					closed <- e.Text
-				} else {
-					closed <- err.Error()
-				}
-				return
-			}
-		}
-	}()
-	payload := []byte(strings.Repeat("x", 1023) + "\n")
-	for range maxInput/len(payload) + 1 {
-		if err := ws.WriteMessage(websocket.BinaryMessage, payload); err != nil {
-			break
-		}
-	}
-	select {
-	case reason := <-closed:
-		if reason != "input_limit" {
-			t.Fatal(reason)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("input limit not enforced")
-	}
-	waitClosed(t, finished)
-}
-
 func TestFinalOutputBeforeShellExit(t *testing.T) {
 	for range 8 {
-		_, ws, _, finished := runtimeSocket(t, time.Minute, time.Minute)
+		_, ws, finished := runtimeSocket(t, make(chan struct{}))
 		if err := ws.WriteMessage(websocket.BinaryMessage, []byte("printf 'FINAL_%s\\n' RESULT; exit\r")); err != nil {
 			t.Fatal(err)
 		}
@@ -158,29 +97,10 @@ func TestFinalOutputBeforeShellExit(t *testing.T) {
 		}
 	}
 }
-func waitClosed(t *testing.T, finished <-chan struct{}) {
-	t.Helper()
-	select {
-	case <-finished:
-	case <-time.After(3 * time.Second):
-		t.Fatal("PTY cleanup did not finish")
-	}
-}
-func readUntilClosed(t *testing.T, ws *websocket.Conn) string {
-	t.Helper()
-	ws.SetReadDeadline(time.Now().Add(3 * time.Second))
-	for {
-		_, _, err := ws.ReadMessage()
-		if err != nil {
-			if e, ok := err.(*websocket.CloseError); ok {
-				return e.Text
-			}
-			t.Fatalf("expected close frame: %v", err)
-		}
-	}
-}
-func TestRealPTYAndRevocation(t *testing.T) {
-	_, ws, revoked, finished := runtimeSocket(t, time.Minute, time.Minute)
+
+func TestRevocation(t *testing.T) {
+	revoked := make(chan struct{})
+	_, ws, finished := runtimeSocket(t, revoked)
 	if err := ws.WriteMessage(websocket.BinaryMessage, []byte("printf 'HELLO_%s\\n' TERMINAL\r")); err != nil {
 		t.Fatal(err)
 	}
@@ -199,48 +119,35 @@ func TestRealPTYAndRevocation(t *testing.T) {
 	}
 	waitClosed(t, finished)
 }
-func TestTimeoutsAndBadInput(t *testing.T) {
-	for _, tc := range []struct {
-		name       string
-		idle, life time.Duration
-		payload    []byte
-		kind       int
-		reason     string
-	}{
-		{"idle", 50 * time.Millisecond, time.Minute, nil, 0, "idle_timeout"},
-		{"absolute", time.Minute, 50 * time.Millisecond, nil, 0, "session_timeout"},
-		{"resize", time.Minute, time.Minute, []byte(`{"type":"resize","rows":101,"cols":80}`), websocket.TextMessage, "invalid_resize"},
-		{"oversize", time.Minute, time.Minute, make([]byte, 4097), websocket.BinaryMessage, "client_disconnected_or_invalid_frame"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			_, ws, _, finished := runtimeSocket(t, tc.idle, tc.life)
-			if tc.payload != nil {
-				if err := ws.WriteMessage(tc.kind, tc.payload); err != nil {
-					t.Fatal(err)
-				}
-			}
-			reason := readUntilClosed(t, ws)
-			// Gorilla sends its own 1009 close frame for oversized messages.
-			if tc.name != "oversize" && reason != tc.reason {
-				t.Fatal(reason)
-			}
-			waitClosed(t, finished)
-		})
+
+func TestShutdownClosesSessions(t *testing.T) {
+	m, ws, finished := runtimeSocket(t, make(chan struct{}))
+	go m.Close()
+	if reason := readUntilClosed(t, ws); reason != "server_shutdown" {
+		t.Fatal(reason)
+	}
+	waitClosed(t, finished)
+}
+
+func waitClosed(t *testing.T, finished <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-finished:
+	case <-time.After(3 * time.Second):
+		t.Fatal("PTY cleanup did not finish")
 	}
 }
-func TestShutdownAndDisconnect(t *testing.T) {
-	for _, shutdown := range []bool{false, true} {
-		t.Run(map[bool]string{true: "shutdown", false: "disconnect"}[shutdown], func(t *testing.T) {
-			m, ws, _, finished := runtimeSocket(t, time.Minute, time.Minute)
-			if shutdown {
-				go m.Close()
-				if reason := readUntilClosed(t, ws); reason != "server_shutdown" {
-					t.Fatal(reason)
-				}
-			} else {
-				ws.Close()
+
+func readUntilClosed(t *testing.T, ws *websocket.Conn) string {
+	t.Helper()
+	ws.SetReadDeadline(time.Now().Add(3 * time.Second))
+	for {
+		_, _, err := ws.ReadMessage()
+		if err != nil {
+			if e, ok := err.(*websocket.CloseError); ok {
+				return e.Text
 			}
-			waitClosed(t, finished)
-		})
+			t.Fatalf("expected close frame: %v", err)
+		}
 	}
 }

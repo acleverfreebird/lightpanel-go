@@ -4,61 +4,104 @@ import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 
 const source = await readFile(new URL('../static/terminal.js', import.meta.url), 'utf8');
-function harness({ readOnly = false, enabled = true, ready = true, api = async () => ({ ticket: 'once' }) } = {}) {
-  const nodes = new Map(), events = {}, sockets = [];
+
+// Minimal stubs for the vendored UMD globals and the DOM surface the module
+// touches; the socket records everything sent through it.
+function harness({ readOnly = false, enabled = true } = {}) {
+  const nodes = new Map(), events = {}, sockets = [], writes = [];
+  let onData, onResize;
   const $ = selector => {
-    if (!nodes.has(selector)) nodes.set(selector, { disabled: false, value: '', content: 'csrf', textContent: '', handlers: {}, addEventListener(name, fn) { this.handlers[name] = fn; }, focus() {} });
+    if (!nodes.has(selector)) nodes.set(selector, { disabled: false, textContent: '', handlers: {}, addEventListener(name, fn) { this.handlers[name] = fn; }, focus() {}, blur() {} });
     return nodes.get(selector);
   };
+  class Terminal {
+    constructor() { this.handlers = {}; }
+    loadAddon() {}
+    open() {}
+    reset() {}
+    focus() {}
+    blur() {}
+    onData(fn) { onData = fn; }
+    onResize(fn) { onResize = fn; }
+    write(data) { writes.push(data); }
+  }
+  const FitAddon = { FitAddon: class { fit() {} } };
+  class ResizeObserver { constructor(fn) { this.fn = fn; } observe() {} disconnect() {} }
   class WebSocket {
     static OPEN = 1;
-    constructor(url, protocols) { this.url = String(url); this.protocols = protocols; this.readyState = 0; this.bufferedAmount = 0; this.sent = []; sockets.push(this); }
+    constructor(url) { this.url = String(url); this.readyState = 0; this.sent = []; sockets.push(this); }
     send(data) { this.sent.push(data); }
     close() { this.closed = true; this.readyState = 3; }
     open() { this.readyState = 1; this.onopen(); }
   }
-  const location = { hash: '#terminal', href: 'https://panel.example/#terminal', protocol: 'https:' };
-  const context = vm.createContext({ $, api, guard: fn => fn, readOnly, confirmAction: async () => true,
-    TextEncoder, TextDecoder, ArrayBuffer, URL, WebSocket, location,
-    document: { body: { dataset: { terminalEnabled: String(enabled), terminalReady: String(ready) } } },
+  const location = { href: 'https://panel.example/#terminal', protocol: 'https:' };
+  const context = vm.createContext({ $, guard: fn => fn, readOnly,
+    // Host-realm globals: the module does `instanceof ArrayBuffer` on message
+    // payloads the test creates outside the vm, so both sides must agree.
+    ArrayBuffer, Terminal, FitAddon, ResizeObserver, WebSocket, URL, location,
+    document: { body: { dataset: { terminalEnabled: String(enabled) } } },
     window: { addEventListener(name, fn) { events[name] = fn; } },
   });
   vm.runInContext(source.replace(/^import .*;\r?\n/gm, '').replace(/^export /gm, ''), context);
   context.setupTerminal();
-  return { $, events, sockets, location };
+  return { $, events, sockets, writes, keystroke: data => onData(data), resize: (rows, cols) => onResize({ rows, cols }) };
 }
 
-test('ticket is sent in subprotocol, output is bounded text, leave disconnects', async () => {
-  const { $, sockets, events, location } = harness();
+test('connect opens a plain session websocket and streams both ways', async () => {
+  const { $, sockets, writes, keystroke, resize } = harness();
   await $('#terminal-connect').handlers.click();
   const ws = sockets[0];
   assert.equal(ws.url, 'wss://panel.example/ws/terminal');
-  assert.deepEqual([...ws.protocols], ['lightpanel-terminal', 'lp-ticket.once']);
+  assert.equal(ws.readyState, 0);
+  assert.equal($('#terminal-connect').disabled, true);
   ws.open();
-  ws.onmessage({ data: new TextEncoder().encode('<script>bad()</script>').buffer });
-  assert.equal($('#terminal-output').textContent, '<script>bad()</script>');
-  ws.onmessage({ data: new TextEncoder().encode('x'.repeat(70000)).buffer });
-  assert.equal($('#terminal-output').textContent.length, 65536);
-  $('#terminal-input').value = 'echo hello';
-  $('#terminal-form').handlers.submit();
-  assert.equal(new TextDecoder().decode(ws.sent[0]), 'echo hello\r');
-  location.hash = '#overview'; events.hashchange();
+  assert.equal($('#terminal-status').textContent, '已连接');
+  keystroke('echo hello\r');
+  assert.deepEqual(ws.sent, ['echo hello\r']);
+  resize(30, 120);
+  assert.deepEqual(ws.sent, ['echo hello\r', JSON.stringify({ type: 'resize', rows: 30, cols: 120 })]);
+  ws.onmessage({ data: new TextEncoder().encode('hello\n').buffer });
+  assert.equal(new TextDecoder().decode(writes.at(-1)), 'hello\n');
+  $('#terminal-disconnect').handlers.click();
   assert.equal(ws.closed, true);
-  assert.equal($('#terminal-input').disabled, true);
+  assert.equal($('#terminal-connect').disabled, false);
 });
 
-test('late ticket response after navigating away cannot open a shell', async () => {
-  let resolve;
-  const { $, sockets, events, location } = harness({ api: () => new Promise(done => { resolve = done; }) });
-  const connecting = $('#terminal-connect').handlers.click();
-  await new Promise(done => setImmediate(done));
-  location.hash = '#overview'; events.hashchange();
-  resolve({ ticket: 'late' }); await connecting;
-  assert.equal(sockets.length, 0);
+test('output arriving before open and status transitions are handled', async () => {
+  const { $, sockets, writes } = harness();
+  await $('#terminal-connect').handlers.click();
+  const ws = sockets[0];
+  ws.onmessage({ data: new TextEncoder().encode('banner\n').buffer });
+  assert.equal(new TextDecoder().decode(writes.at(-1)), 'banner\n');
+  assert.equal($('#terminal-status').textContent, '正在连接…');
+  ws.onclose({ reason: 'shell_exit' });
+  assert.equal($('#terminal-status').textContent, '连接已结束：shell_exit');
+  assert.equal($('#terminal-connect').disabled, false);
 });
 
-test('readonly, disabled and wildcard configuration block connecting', async () => {
-  for (const options of [{ readOnly: true }, { enabled: false }, { ready: false }]) {
+test('late onclose from a superseded socket is ignored', async () => {
+  const { $, sockets } = harness();
+  await $('#terminal-connect').handlers.click();
+  const first = sockets[0];
+  $('#terminal-disconnect').handlers.click();
+  await $('#terminal-connect').handlers.click();
+  const second = sockets[1];
+  first.onclose({ reason: 'client_disconnected' });
+  assert.equal($('#terminal-connect').disabled, true, 'second session still active');
+  second.close();
+});
+
+test('pagehide closes the socket', async () => {
+  const { $, events, sockets } = harness();
+  await $('#terminal-connect').handlers.click();
+  const ws = sockets[0];
+  events.pagehide();
+  assert.equal(ws.closed, true);
+  assert.equal($('#terminal-connect').disabled, false);
+});
+
+test('readonly and disabled configuration block connecting', async () => {
+  for (const options of [{ readOnly: true }, { enabled: false }]) {
     const { $, sockets } = harness(options);
     assert.equal($('#terminal-connect').disabled, true);
     await $('#terminal-connect').handlers.click();

@@ -4,31 +4,37 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
-	"github.com/gorilla/websocket"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
+// The Web Shell authenticates with the panel login session itself: no ticket
+// endpoint exists anymore, and the websocket route requires a valid session
+// cookie. A cross-origin browser page must not be able to ride the cookie.
 func TestTerminalAdmission(t *testing.T) {
 	h, _ := testPanel(t, false)
 	c, csrf := login(t, h)
-	if w := request(h, "POST", "/api/terminal/ticket", "", c, csrf); w.Code != 200 {
-		t.Fatalf("ticket: %d %s", w.Code, w.Body)
+	if w := request(h, "POST", "/api/terminal/ticket", "", c, csrf); w.Code != 404 && w.Code != 405 {
+		t.Fatalf("ticket endpoint should be gone: %d", w.Code)
 	}
-	if w := request(h, "GET", "/ws/terminal", "", c, ""); w.Code != 403 {
-		t.Fatalf("missing ticket: %d", w.Code)
+	if w := request(h, "GET", "/ws/terminal", "", nil, ""); w.Code != 401 {
+		t.Fatalf("unauthenticated websocket: %d", w.Code)
 	}
-	for _, origin := range []string{"", "null", "http://evil.example", "http://localhost/"} {
-		r := httptest.NewRequest("POST", "http://localhost/api/terminal/ticket", nil)
+	// Authenticated, no Origin (non-browser client): passes admission and
+	// fails only at the websocket handshake.
+	if w := request(h, "GET", "/ws/terminal", "", c, ""); w.Code != 400 {
+		t.Fatalf("authenticated non-upgrade request: %d", w.Code)
+	}
+	for _, origin := range []string{"http://evil.example", "http://localhost:81", "null"} {
+		r := httptest.NewRequest("GET", "http://localhost/ws/terminal", nil)
 		r.AddCookie(c)
 		r.Header.Set("Origin", origin)
-		r.Header.Set("Referer", "http://localhost/")
-		r.Header.Set("X-CSRF-Token", csrf)
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, r)
 		if w.Code != 403 {
@@ -37,7 +43,7 @@ func TestTerminalAdmission(t *testing.T) {
 	}
 }
 
-func TestTerminalWebSocketTicketLogoutAndAudit(t *testing.T) {
+func TestTerminalWebSocketAndRevocation(t *testing.T) {
 	var logs bytes.Buffer
 	previous := slog.Default()
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
@@ -45,81 +51,54 @@ func TestTerminalWebSocketTicketLogoutAndAudit(t *testing.T) {
 	h, _ := testPanel(t, false)
 	defer h.(*panelHandler).Close()
 	c, csrf := login(t, h)
-	issue := func() string {
-		t.Helper()
-		w := request(h, "POST", "/api/terminal/ticket", "", c, csrf)
-		var data struct {
-			Ticket string `json:"ticket"`
-		}
-		if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &data) != nil || len(data.Ticket) != 64 {
-			t.Fatalf("ticket %d %s", w.Code, w.Body)
-		}
-		return data.Ticket
-	}
-	if w := request(h, "POST", "/api/terminal/ticket", "", c, ""); w.Code != 403 {
-		t.Fatal("CSRF bypass")
-	}
-	if w := request(h, "GET", "/ws/terminal", "", nil, ""); w.Code != 401 {
-		t.Fatal("authentication bypass")
-	}
 	server := httptest.NewServer(h)
 	defer server.Close()
-	dial := func(ticket string) (*websocket.Conn, *http.Response, error) {
-		d := websocket.Dialer{Subprotocols: []string{"lightpanel-terminal", "lp-ticket." + ticket}}
-		return d.Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/ws/terminal", http.Header{"Origin": {"http://localhost"}, "Host": {"localhost"}, "Cookie": {c.String()}})
-	}
-	ticket := issue()
-	ws, resp, err := dial(ticket)
+	d := websocket.Dialer{HandshakeTimeout: 5 * time.Second}
+	url := "ws" + strings.TrimPrefix(server.URL, "http") + "/ws/terminal"
+	header := http.Header{"Origin": {server.URL}, "Cookie": {c.String()}}
+	ws, resp, err := d.Dial(url, header)
 	if err != nil {
 		t.Fatalf("upgrade: %v %+v", err, resp)
 	}
 	defer ws.Close()
-	if ws.Subprotocol() != "lightpanel-terminal" {
-		t.Fatal("ticket reflected in selected protocol")
-	}
-	_, resp, err = dial(ticket)
-	if err == nil || resp.StatusCode != 403 {
-		t.Fatal("ticket replay accepted")
-	}
-	resp.Body.Close()
-	second := issue()
-	ws2, _, err := dial(second)
-	if err != nil {
+	if err := ws.WriteMessage(websocket.BinaryMessage, []byte("printf 'SECRET_TERMINAL_BODY'\r")); err != nil {
 		t.Fatal(err)
 	}
-	defer ws2.Close()
-	_, resp, err = dial(issue())
-	if err == nil || resp.StatusCode != 429 {
-		t.Fatal("account quota bypass")
-	}
-	resp.Body.Close()
-	if err := ws.WriteMessage(websocket.BinaryMessage, []byte("printf SECRET_TERMINAL_BODY\r")); err != nil {
-		t.Fatal(err)
-	}
-	if w := request(h, "POST", "/logout", "", c, csrf); w.Code != 303 {
-		t.Fatal("logout failed")
-	}
-	for _, conn := range []*websocket.Conn{ws, ws2} {
-		conn.SetReadDeadline(time.Now().Add(3 * time.Second))
-		for {
-			_, _, err := conn.ReadMessage()
-			if err != nil {
-				e, ok := err.(*websocket.CloseError)
-				if !ok || e.Text != "session_revoked" {
-					t.Fatalf("logout close: %v", err)
-				}
-				break
-			}
+	var output bytes.Buffer
+	ws.SetReadDeadline(time.Now().Add(3 * time.Second))
+	for !strings.Contains(output.String(), "SECRET_TERMINAL_BODY") {
+		_, b, err := ws.ReadMessage()
+		if err != nil {
+			t.Fatalf("output so far %q: %v", output.String(), err)
 		}
+		output.Write(b)
+	}
+	// Logging out revokes the login session the shell runs on, closing the
+	// live websocket with the revocation reason.
+	if w := request(h, "POST", "/logout", "", c, csrf); w.Code != 303 {
+		t.Fatalf("logout %d %s", w.Code, w.Body)
+	}
+	ws.SetReadDeadline(time.Now().Add(3 * time.Second))
+	for {
+		_, _, err := ws.ReadMessage()
+		if err != nil {
+			if e, ok := err.(*websocket.CloseError); !ok || e.Text != "session_revoked" {
+				t.Fatalf("logout close: %v", err)
+			}
+			break
+		}
+	}
+	if _, resp, err := d.Dial(url, header); err == nil || resp.StatusCode != 401 {
+		t.Fatalf("revoked cookie still connects: %v %d", err, resp.StatusCode)
 	}
 	h.(*panelHandler).Close()
 	text := logs.String()
-	for _, secret := range []string{ticket, second, c.Value, csrf, "SECRET_TERMINAL_BODY", "testing-password-long"} {
+	for _, secret := range []string{"SECRET_TERMINAL_BODY", "testing-password-long"} {
 		if strings.Contains(text, secret) {
 			t.Fatal("audit leaked secret")
 		}
 	}
-	for _, event := range []string{`"event":"ticket_issued"`, `"event":"started"`, `"event":"ended"`, `"reason":"session_revoked"`, `"reason":"terminal PTY limit reached"`} {
+	for _, event := range []string{`"event":"started"`, `"event":"ended"`, `"reason":"session_revoked"`} {
 		if !strings.Contains(text, event) {
 			t.Fatalf("missing audit %s", event)
 		}
@@ -128,10 +107,13 @@ func TestTerminalWebSocketTicketLogoutAndAudit(t *testing.T) {
 
 func TestTerminalReadOnly(t *testing.T) {
 	h, _ := testPanel(t, true)
-	c, csrf := login(t, h)
-	for _, route := range []struct{ method, path string }{{"POST", "/api/terminal/ticket"}, {"GET", "/ws/terminal"}} {
-		if w := request(h, route.method, route.path, "", c, csrf); w.Code != 403 {
-			t.Fatalf("readonly %s: %d", route.path, w.Code)
-		}
+	c, _ := login(t, h)
+	r := httptest.NewRequest("GET", "http://localhost/ws/terminal", nil)
+	r.Header.Set("Origin", "http://localhost")
+	r.AddCookie(c)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != 403 {
+		t.Fatalf("readonly websocket: %d", w.Code)
 	}
 }

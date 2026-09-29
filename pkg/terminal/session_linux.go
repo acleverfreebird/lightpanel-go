@@ -7,10 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"strconv"
-	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/creack/pty"
@@ -18,161 +15,121 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const maxInput = 1 << 20
-const maxOutput = 16 << 20
-
-func (m *Manager) run(r *http.Request, ws *websocket.Conn, expires time.Time, revoked <-chan struct{}) {
-	id := token()[:16]
-	start := time.Now()
-	if err := requirePidfd(); err != nil {
-		m.audit(r, "start_failed", "pidfd_unavailable", id)
-		_ = ws.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(1011, "pidfd_unavailable"), time.Now().Add(time.Second))
-		return
+// shellCommand builds a login shell with a normal root environment. Only the
+// panel's own secrets (LP_PASS_HASH, proxy credentials) are withheld.
+func shellCommand() *exec.Cmd {
+	shell := "/bin/sh"
+	if _, err := os.Stat("/bin/bash"); err == nil {
+		shell = "/bin/bash"
 	}
-	cmd := exec.Command("/bin/sh", "-i")
-	// Do not expose panel environment (LP_PASS_HASH, proxy credentials, etc.).
-	cmd.Env = []string{"PATH=/usr/local/bin:/usr/bin:/bin", "TERM=dumb", "LANG=C.UTF-8", "HOME=/"}
-	cmd.Dir = "/"
+	home := "/root"
+	if fi, err := os.Stat(home); err != nil || !fi.IsDir() {
+		home = "/"
+	}
+	cmd := exec.Command(shell, "-l")
+	cmd.Dir = home
+	cmd.Env = []string{
+		"TERM=xterm-256color",
+		"HOME=" + home,
+		"SHELL=" + shell,
+		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+		"LANG=C.UTF-8",
+	}
+	return cmd
+}
+
+func (m *Manager) run(r *http.Request, ws *websocket.Conn, revoked <-chan struct{}) {
+	start := time.Now()
+	cmd := shellCommand()
 	tty, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 24, Cols: 80})
 	if err != nil {
-		m.audit(r, "start_failed", "pty_start", id)
+		m.audit(r, "start_failed", "pty_start")
 		_ = ws.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(1011, "pty_start_failed"), time.Now().Add(time.Second))
 		return
 	}
-	// Re-wrap after O_NONBLOCK so os.File enables the runtime poller.
-	fd, err := unix.FcntlInt(tty.Fd(), unix.F_DUPFD_CLOEXEC, 0)
-	if err != nil {
-		killSession(cmd.Process.Pid)
-		_ = tty.Close()
-		_ = cmd.Wait()
-		m.audit(r, "start_failed", "pty_dup", id)
-		return
-	}
-	_ = tty.Close()
-	if err = unix.SetNonblock(fd, true); err != nil {
-		_ = unix.Close(fd)
-		killSession(cmd.Process.Pid)
-		_ = cmd.Wait()
-		m.audit(r, "start_failed", "pty_nonblock", id)
-		return
-	}
-	tty = os.NewFile(uintptr(fd), "terminal-pty")
-	m.audit(r, "started", "", id, "pid", cmd.Process.Pid, "uid", os.Geteuid())
-	ws.SetReadLimit(4096)
-	// Hijacked HTTP deadlines must not impose the panel's 60-second timeout.
+	m.audit(r, "started", "", "pid", cmd.Process.Pid, "uid", os.Geteuid())
+	pid := cmd.Process.Pid
+
+	// Hijacked HTTP deadlines must not impose the panel's request timeout.
 	_ = ws.SetReadDeadline(time.Time{})
-	var in, out atomic.Int64
-	var lastInput atomic.Int64
-	lastInput.Store(time.Now().UnixNano())
-	events := make(chan string, 3)
+	exited := make(chan struct{})
+	go func() { _ = cmd.Wait(); close(exited) }()
+
+	clientGone := make(chan string, 1)
+	outputDone := make(chan struct{})
 	var workers sync.WaitGroup
 	workers.Add(2)
-	go func() { defer workers.Done(); events <- readInput(ws, tty, &in, &lastInput) }()
-	go func() { defer workers.Done(); events <- writeOutput(ws, tty, &out) }()
-	exited := make(chan struct{})
 	go func() {
-		// Observe exit without reaping: keep the shell PID/session ID reserved
-		// until all job-control groups have been cleaned up.
-		var info unix.Siginfo
-		for unix.Waitid(unix.P_PID, cmd.Process.Pid, &info, unix.WEXITED|unix.WNOWAIT, nil) == unix.EINTR {
-		}
-		close(exited)
+		defer workers.Done()
+		clientGone <- pumpInput(ws, tty)
 	}()
-	shellExit := (<-chan struct{})(exited)
-	var drain <-chan time.Time
-	lifetime := m.lifetime
-	if remaining := time.Until(expires); remaining < lifetime {
-		lifetime = remaining
-	}
-	absolute := time.NewTimer(lifetime)
-	defer absolute.Stop()
-	idle := time.NewTimer(m.idle)
-	defer idle.Stop()
+	go func() {
+		defer workers.Done()
+		defer close(outputDone)
+		pumpOutput(ws, tty)
+	}()
+
 	reason := ""
 	for reason == "" {
 		select {
-		case reason = <-events:
-		case <-shellExit:
-			shellExit = nil
-			// Drain buffered final output, but never let surviving jobs or a
-			// slow reader hold the PTY indefinitely. Revocation stays immediate.
-			timer := time.NewTimer(100 * time.Millisecond)
-			defer timer.Stop()
-			drain = timer.C
-		case <-drain:
+		case reason = <-clientGone:
+			// Client vanished; the shell and its jobs are torn down below.
+			if reason == "" {
+				reason = "client_disconnected"
+			}
+		case <-exited:
+			// Shell finished; give the output pump a moment to flush the
+			// final screen (a slow reader cannot hold the slot forever).
+			select {
+			case <-outputDone:
+			case <-time.After(2 * time.Second):
+			}
 			reason = "shell_exit"
 		case <-revoked:
 			reason = "session_revoked"
 		case <-m.done:
 			reason = "server_shutdown"
-		case <-r.Context().Done():
-			reason = "request_cancelled"
-		case <-absolute.C:
-			reason = "session_timeout"
-		case <-idle.C:
-			remaining := m.idle - time.Since(time.Unix(0, lastInput.Load()))
-			if remaining <= 0 {
-				reason = "idle_timeout"
-			} else {
-				idle.Reset(remaining)
-			}
 		}
 	}
-	_ = ws.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(1000, reason), time.Now().Add(200*time.Millisecond))
-	_ = ws.Close()
-	killSession(cmd.Process.Pid)
+	_ = ws.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(1000, reason), time.Now().Add(time.Second))
+	// pty.StartWithSize makes the shell a session leader, so this reaches the
+	// whole process group — editors, pipelines, background jobs. This module
+	// is not a sandbox; deliberately detached processes may survive.
+	_ = unix.Kill(-pid, unix.SIGKILL)
 	_ = tty.Close()
-	<-exited
-	_ = cmd.Wait()
+	_ = ws.Close()
 	workers.Wait()
-	m.audit(r, "ended", reason, id, "duration_ms", time.Since(start).Milliseconds(), "input_bytes", in.Load(), "output_bytes", out.Load())
+	m.audit(r, "ended", reason, "pid", pid, "duration_ms", time.Since(start).Milliseconds())
 }
 
-func requirePidfd() error {
-	// Cleanup also requires readable process metadata, not just pidfd syscalls.
-	if _, err := os.ReadFile("/proc/self/stat"); err != nil {
-		return err
-	}
-	fd, err := unix.PidfdOpen(os.Getpid(), 0)
-	if err != nil {
-		return err
-	}
-	defer unix.Close(fd)
-	return unix.PidfdSendSignal(fd, 0, nil, 0)
-}
-
-func readInput(ws *websocket.Conn, tty *os.File, total, lastInput *atomic.Int64) string {
+// pumpInput streams client keystrokes into the PTY and applies resize
+// requests. Unknown control messages are ignored rather than fatal.
+func pumpInput(ws *websocket.Conn, tty *os.File) string {
 	for {
 		kind, b, err := ws.ReadMessage()
 		if err != nil {
-			return "client_disconnected_or_invalid_frame"
-		}
-		if total.Add(int64(len(b))) > maxInput {
-			return "input_limit"
+			return "client_disconnected"
 		}
 		switch kind {
 		case websocket.BinaryMessage:
-			if len(b) == 0 {
-				continue
-			}
-			lastInput.Store(time.Now().UnixNano())
-			if _, err = tty.Write(b); err != nil {
-				return "pty_write_failed"
+			if len(b) > 0 {
+				if _, err = tty.Write(b); err != nil {
+					return "pty_write_failed"
+				}
 			}
 		case websocket.TextMessage:
-			var size struct {
+			var msg struct {
 				Type string `json:"type"`
 				Rows uint16 `json:"rows"`
 				Cols uint16 `json:"cols"`
 			}
-			if json.Unmarshal(b, &size) != nil || size.Type != "resize" || size.Rows < 1 || size.Rows > 100 || size.Cols < 1 || size.Cols > 240 {
-				return "invalid_resize"
+			if json.Unmarshal(b, &msg) != nil || msg.Type != "resize" {
+				continue
 			}
-			if resizePTY(tty, size.Rows, size.Cols) != nil {
-				return "resize_failed"
+			if msg.Rows < 1 || msg.Rows > 1000 || msg.Cols < 1 || msg.Cols > 1000 {
+				continue
 			}
-		default:
-			return "invalid_frame"
+			_ = resizePTY(tty, msg.Rows, msg.Cols)
 		}
 	}
 }
@@ -192,52 +149,19 @@ func resizePTY(tty *os.File, rows, cols uint16) error {
 	}
 	return resizeErr
 }
-func writeOutput(ws *websocket.Conn, tty *os.File, total *atomic.Int64) string {
-	b := make([]byte, 4096)
+
+func pumpOutput(ws *websocket.Conn, tty *os.File) {
+	b := make([]byte, 32<<10)
 	for {
 		n, err := tty.Read(b)
 		if n > 0 {
-			if total.Add(int64(n)) > maxOutput {
-				return "output_limit"
-			}
-			_ = ws.SetWriteDeadline(time.Now().Add(5 * time.Second))
+			_ = ws.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			if ws.WriteMessage(websocket.BinaryMessage, b[:n]) != nil {
-				return "client_write_failed"
+				return
 			}
 		}
 		if err != nil {
-			return "pty_closed"
+			return
 		}
 	}
-}
-
-// Job-control shells use multiple process groups. Reap the entire PTY session,
-// pinning each process with pidfd before verifying its session ID. Deliberately
-// detached processes can escape a session; this module is not a sandbox.
-func killSession(sid int) {
-	entries, _ := os.ReadDir("/proc")
-	for _, entry := range entries {
-		pid, err := strconv.Atoi(entry.Name())
-		if err != nil {
-			continue
-		}
-		fd, err := unix.PidfdOpen(pid, 0)
-		if err != nil {
-			continue
-		}
-		b, err := os.ReadFile("/proc/" + entry.Name() + "/stat")
-		if err == nil {
-			end := strings.LastIndexByte(string(b), ')')
-			if end >= 0 {
-				fields := strings.Fields(string(b[end+1:]))
-				if len(fields) > 3 && fields[3] == strconv.Itoa(sid) {
-					_ = unix.PidfdSendSignal(fd, unix.SIGKILL, nil, 0)
-				}
-			}
-		}
-		_ = unix.Close(fd)
-	}
-	// The original shell group is also killed if opening a descendant pidfd
-	// raced with exit. Admission has already verified pidfd availability.
-	_ = unix.Kill(-sid, unix.SIGKILL)
 }
