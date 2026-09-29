@@ -18,8 +18,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// shellCommand builds a login shell with a normal user environment. Only the
-// panel's own secrets (LP_PASS_HASH, proxy credentials) are withheld.
+// shellCommand 构造一个带常规用户环境的登录 shell，只保留面板自身的机密
+// 环境变量（LP_PASS_HASH、代理凭据）不继承。
 func shellCommand() *exec.Cmd {
 	shell := "/bin/sh"
 	if _, err := os.Stat("/bin/bash"); err == nil {
@@ -52,6 +52,8 @@ func shellCommand() *exec.Cmd {
 	return cmd
 }
 
+// run 在一条 WebSocket 上服务一个 PTY 会话：输入输出双向直传，会话在客户
+// 端断开、登录撤销、面板关闭或 shell 退出时结束并清理整个进程组。
 func (m *Manager) run(r *http.Request, ws *websocket.Conn, revoked <-chan struct{}) {
 	start := time.Now()
 	cmd := shellCommand()
@@ -61,12 +63,11 @@ func (m *Manager) run(r *http.Request, ws *websocket.Conn, revoked <-chan struct
 		_ = ws.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(1011, "pty_start_failed"), time.Now().Add(time.Second))
 		return
 	}
-	// Re-wrap after O_NONBLOCK so os.File enables the runtime poller.
+	// pty.Start 返回的描述符带 O_NONBLOCK；重新封装以便 Go 运行时 netpoller
+	// 高效轮询（先复制 fd、关旧、再设非阻塞）。
 	fd, err := unix.FcntlInt(tty.Fd(), unix.F_DUPFD_CLOEXEC, 0)
 	if err != nil {
-		killSession(cmd.Process.Pid)
-		_ = tty.Close()
-		_ = cmd.Wait()
+		m.cleanup(cmd, tty)
 		m.audit(r, "start_failed", "pty_dup", "err", err.Error())
 		_ = ws.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(1011, "pty_start_failed"), time.Now().Add(time.Second))
 		return
@@ -74,8 +75,7 @@ func (m *Manager) run(r *http.Request, ws *websocket.Conn, revoked <-chan struct
 	_ = tty.Close()
 	if err = unix.SetNonblock(fd, true); err != nil {
 		_ = unix.Close(fd)
-		killSession(cmd.Process.Pid)
-		_ = cmd.Wait()
+		m.cleanup(cmd, nil)
 		m.audit(r, "start_failed", "pty_nonblock", "err", err.Error())
 		_ = ws.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(1011, "pty_start_failed"), time.Now().Add(time.Second))
 		return
@@ -84,7 +84,7 @@ func (m *Manager) run(r *http.Request, ws *websocket.Conn, revoked <-chan struct
 	m.audit(r, "started", "", "pid", cmd.Process.Pid, "uid", os.Geteuid())
 	pid := cmd.Process.Pid
 
-	// Hijacked HTTP deadlines must not impose the panel's request timeout.
+	// HTTP 劫持后的连接不受面板请求超时约束，清掉升级期限。
 	_ = ws.SetReadDeadline(time.Time{})
 	exited := make(chan struct{})
 	go func() {
@@ -112,13 +112,13 @@ func (m *Manager) run(r *http.Request, ws *websocket.Conn, revoked <-chan struct
 	for reason == "" {
 		select {
 		case reason = <-clientGone:
-			// Client vanished; the shell and its jobs are torn down below.
+			// 客户端消失；shell 及其作业在下方整体回收。
 			if reason == "" {
 				reason = "client_disconnected"
 			}
 		case <-exited:
-			// Shell finished; give the output pump a moment to flush the
-			// final screen (a slow reader cannot hold the slot forever).
+			// shell 已退出；给输出泵一点时间冲刷最后一屏（慢读者不可能
+			// 长期占住会话）。
 			select {
 			case <-outputDone:
 			case <-time.After(2 * time.Second):
@@ -140,9 +140,20 @@ func (m *Manager) run(r *http.Request, ws *websocket.Conn, revoked <-chan struct
 	m.audit(r, "ended", reason, "pid", pid, "duration_ms", time.Since(start).Milliseconds())
 }
 
-// Job-control shells use multiple process groups. Reap the entire PTY session,
-// pinning each process with pidfd before verifying its session ID. Deliberately
-// detached processes can escape a session; this module is not a sandbox.
+// cleanup 回收启动早期失败的 PTY 子进程。
+func (m *Manager) cleanup(cmd *exec.Cmd, tty *os.File) {
+	if tty != nil {
+		_ = tty.Close()
+	}
+	if cmd.Process != nil {
+		killSession(cmd.Process.Pid)
+		_ = cmd.Wait()
+	}
+}
+
+// Job-control shell 会使用多个进程组。回收整个 PTY 会话：先用 pidfd 钉住
+// 每个进程再核对其会话 ID，避免读取 /proc 与发信号之间 PID 复用误伤。
+// 有意 setsid 脱离会话的进程不在此列；本模块不是沙箱。
 func killSession(sid int) {
 	entries, _ := os.ReadDir("/proc")
 	for _, entry := range entries {
@@ -152,35 +163,36 @@ func killSession(sid int) {
 		}
 		fd, err := unix.PidfdOpen(pid, 0)
 		if err != nil {
-			b, err := os.ReadFile("/proc/" + entry.Name() + "/stat")
-			if err == nil {
-				end := strings.LastIndexByte(string(b), ')')
-				if end >= 0 {
-					fields := strings.Fields(string(b[end+1:]))
-					if len(fields) > 3 && fields[3] == strconv.Itoa(sid) {
-						_ = unix.Kill(pid, unix.SIGKILL)
-					}
-				}
+			// 系统过旧不支持 pidfd 时退回普通信号。
+			if sessionMatch(entry.Name(), sid) {
+				_ = unix.Kill(pid, unix.SIGKILL)
 			}
 			continue
 		}
-		b, err := os.ReadFile("/proc/" + entry.Name() + "/stat")
-		if err == nil {
-			end := strings.LastIndexByte(string(b), ')')
-			if end >= 0 {
-				fields := strings.Fields(string(b[end+1:]))
-				if len(fields) > 3 && fields[3] == strconv.Itoa(sid) {
-					_ = unix.PidfdSendSignal(fd, unix.SIGKILL, nil, 0)
-				}
-			}
+		if sessionMatch(entry.Name(), sid) {
+			_ = unix.PidfdSendSignal(fd, unix.SIGKILL, nil, 0)
 		}
 		_ = unix.Close(fd)
 	}
 	_ = unix.Kill(-sid, unix.SIGKILL)
 }
 
-// pumpInput streams client keystrokes into the PTY and applies resize
-// requests. Unknown control messages are ignored rather than fatal.
+// sessionMatch 判断 /proc/<pid>/stat 对应的进程是否属于指定会话。
+func sessionMatch(pid string, sid int) bool {
+	b, err := os.ReadFile("/proc/" + pid + "/stat")
+	if err != nil {
+		return false
+	}
+	end := strings.LastIndexByte(string(b), ')')
+	if end < 0 {
+		return false
+	}
+	fields := strings.Fields(string(b[end+1:]))
+	return len(fields) > 3 && fields[3] == strconv.Itoa(sid)
+}
+
+// pumpInput 把客户端按键流入 PTY 并处理 resize 控制帧；未知控制帧忽略，
+// 不视为致命错误。
 func pumpInput(ws *websocket.Conn, tty *os.File) string {
 	for {
 		kind, b, err := ws.ReadMessage()
@@ -212,7 +224,7 @@ func pumpInput(ws *websocket.Conn, tty *os.File) string {
 }
 
 func resizePTY(tty *os.File, rows, cols uint16) error {
-	// File.Fd would switch the descriptor back to blocking mode.
+	// File.Fd 会把描述符切回阻塞模式，必须走 SyscallConn。
 	raw, err := tty.SyscallConn()
 	if err != nil {
 		return err

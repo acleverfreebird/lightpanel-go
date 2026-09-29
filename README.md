@@ -55,7 +55,7 @@ docs/VALIDATION.md           验证记录与已知限制
 
 ### MVP 范围
 
-已实现：系统概览（指标趋势、主机信息、运行诊断）、进程搜索/分页/结束、systemd 服务管理（已加载与已安装单元、启停/重启/重载/开机自启）、全盘文件浏览/上传/下载/新建文件夹/重命名/在线编辑/递归删除/权限、版本检查与一键更新、单管理员登录和可选只读权限、系统/服务日志、防火墙端口规则、站点管理（自动识别 Nginx/Apache/Docker/certbot，浏览已配置站点，创建静态站点、反向代理或 Docker 容器部署，Let's Encrypt 证书签发，受控删除与重载）、应用商店（通过系统软件包管理器一键安装/卸载 Nginx/Apache/Docker/certbot/MySQL/MariaDB/PostgreSQL/Redis，安装与卸载均为后台任务并可查看进度与输出）、数据库管理（自动识别 MySQL/MariaDB/PostgreSQL/Redis，查看库与用户，建库/删库、创建用户与修改密码，引擎启停）。Web Shell（Web Terminal）为浏览器里的完整交互式终端（内置 xterm.js + 真 PTY，支持 vim/top、窗口自适应），复用面板登录会话，跨源握手拒绝、退出登录即时撤销并保留生命周期审计；详见 [Web Shell](docs/WEB-TERMINAL.md)。
+已实现：系统概览（指标趋势、主机信息、运行诊断）、进程搜索/分页/结束、systemd 服务管理（已加载与已安装单元、启停/重启/重载/开机自启）、全盘文件浏览/上传/下载/新建文件夹/重命名/在线编辑/递归删除/权限、版本检查与一键更新、单管理员登录和可选只读权限、系统/服务日志、防火墙端口规则、站点管理（自动识别 Nginx/Apache/Docker/certbot，浏览已配置站点，创建静态站点、反向代理或 Docker 容器部署，Let's Encrypt 证书签发，受控删除与重载）、应用商店（通过系统软件包管理器一键安装/卸载 Nginx/Apache/Docker/certbot/MySQL/MariaDB/PostgreSQL/Redis，安装与卸载均为后台任务并可查看进度与输出）、数据库管理（自动识别 MySQL/MariaDB/PostgreSQL/Redis，查看库与用户，建库/删库、创建用户与修改密码，引擎启停）。终端（Web Terminal）为宝塔风格的网页终端：侧栏打开即连，整页控制台（内置 xterm.js + 真 PTY，支持 vim/top、窗口自适应与 5000 行回滚），复用面板登录会话，跨源握手拒绝、退出登录即时撤销并保留生命周期审计；详见 [终端](docs/WEB-TERMINAL.md)。
 
 安全边界：这是有权限的主机管理工具，不是多租户容器。文件管理面向**整个文件系统**：所有接口只接受绝对路径，`..` 组件、反斜杠与 NUL 一律拒绝；`/proc`、`/sys`、`/dev`、`/run` 这四个虚拟系统目录拒绝删除与移动。下载/编辑读取只接受普通文件（符号链接若最终指向普通文件也可下载）；chmod 只接受普通文件与目录，且拒绝 setuid/setgid 与符号链接；只允许普通文件上传，禁止覆盖；目录删除默认要求为空，带 `recursive=true` 时递归删除且不允许删除根；在线编辑只处理 ≤1 MiB 且不含 NUL 的普通文件，保存先写临时文件再原子替换，且拒绝以符号链接为目标的写入。进程以 root 运行时这些接口等同 root 文件权限；默认的最小特权模式下面板以专用非特权用户 `lightpanel` 运行（见「最小特权 helper」），文件接口仅等同该用户权限。无论哪种模式，请务必启用 TLS/反代并保管好管理员密码。
 
@@ -255,6 +255,16 @@ TOML 是可选外部文件：不传 `-c` 时只用安全默认值和环境变量
 反代 TLS：TLS 两项留空，`public_origin="https://panel.example.com"`。面板默认绑定 `0.0.0.0` 并放行明文 HTTP 对外（`allow_public_http` 缺省开启，可用环境变量 `LP_ALLOW_PUBLIC_HTTP` 覆盖）；确需对外明文监听的场景应自行评估——公网明文传输会暴露凭据与会话，生产环境仍应使用 TLS 或反向代理。如需收紧：将 `host` 改回 `127.0.0.1` 并设 `allow_public_http = false`，此时无本地证书时仅允许 loopback 监听。绑定 `0.0.0.0` 且未配置域名 `public_origin` 时，浏览器经由实际 IP 访问，Host/Origin 校验按请求自身的 Host 放行（跨站请求仍被 Origin/Referer 与 CSRF token 拦截）；若配置了具体域名/IP 的 `public_origin`，则维持严格 Host 校验，只能经该 origin 访问。Nginx HTTPS server 内示例：
 
 ```nginx
+location /ws/terminal {
+    proxy_pass http://127.0.0.1:8888;
+    proxy_set_header Host $http_host;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_read_timeout 86400s;
+    proxy_buffering off;
+}
+
 location / {
     proxy_pass http://127.0.0.1:8888;
     proxy_set_header Host $http_host;
@@ -340,6 +350,6 @@ allow_databases = true  # 数据库管理：列表/建库/删库/用户管理（
 1. （已实现，见「最小特权 helper」）后续收窄方向：按动作区分面板管理员角色、helper 请求限速与审计导出。
 2. 多用户/角色、TOTP、会话撤销页面；确有需要时才引入 SQLite。
 3. 防火墙区域选择、持久化规则事务、远程连接保护和定时回滚。
-4. Web Shell 已是完整交互式终端（登录即用）；如需再收紧，可叠加会话配额、时长上限或专用跳板机审计。
+4. 网页终端已是完整交互式终端（登录即用）；如需再收紧，可叠加会话配额、时长上限或专用跳板机审计。
 5. 软件包、cron、网络配置、Docker 检测、告警；各自独立适配器，保持依赖可选。
 6. 多磁盘/网卡分项、进程 CPU 采样、超大进程表分页优化、发行版兼容矩阵与 CI。

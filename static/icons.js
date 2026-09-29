@@ -8,6 +8,7 @@ const paths = {
   databases: 'M4 6c0-4 16-4 16 0s-16 4-16 0 M4 6v12c0 4 16 4 16 0V6 M4 12c0 4 16 4 16 0',
   files: 'M3 7h7l2 2h9v11H3z M3 7V4h6l3 3h8v2',
   logs: 'M5 3h10l4 4v14H5z M14 3v5h5 M8 12h8 M8 16h6',
+  terminal: 'M3 5h18v14H3z M7 9l3 3-3 3 M13 15h5',
   firewall: 'M12 3l8 3v6c0 5-8 9-8 9S4 17 4 12V6z M8 12l3 3 5-6',
   refresh: 'M20 8a8 8 0 0 0-14-3L3 8 M3 3v5h5 M4 16a8 8 0 0 0 14 3l3-3 M21 21v-5h-5',
   arrow: 'M6 18L18 6 M6 6h12v12',

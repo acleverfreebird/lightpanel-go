@@ -39,7 +39,7 @@ func TestSameOrigin(t *testing.T) {
 		r := httptest.NewRequest("GET", "http://"+tc.host+"/ws/terminal", nil)
 		r.Host = tc.host
 		r.Header.Set("Origin", tc.origin)
-		if got := sameOrigin(r); got != tc.want {
+		if got := sameOrigin(r, &config.Config{PublicOrigin: "http://0.0.0.0:8888"}); got != tc.want {
 			t.Fatalf("sameOrigin(origin=%q host=%q) = %v, want %v", tc.origin, tc.host, got, tc.want)
 		}
 	}

@@ -17,9 +17,10 @@ import (
 	"lightpanel/config"
 )
 
-// The Web Shell authenticates with the panel login session itself: no ticket
-// endpoint exists anymore, and the websocket route requires a valid session
-// cookie. A cross-origin browser page must not be able to ride the cookie.
+// The web terminal authenticates with the panel login session itself: no
+// ticket endpoint exists anymore, and the websocket route requires a valid
+// session cookie. A cross-origin browser page must not be able to ride the
+// cookie.
 func TestTerminalAdmission(t *testing.T) {
 	h, _ := testPanel(t, false)
 	c, csrf := login(t, h)
@@ -157,5 +158,53 @@ func TestTerminalReadOnly(t *testing.T) {
 	h.ServeHTTP(w, r)
 	if w.Code != 403 {
 		t.Fatalf("readonly websocket: %d", w.Code)
+	}
+}
+
+func TestTerminalTLSProxyAdmission(t *testing.T) {
+	for _, publicOrigin := range []string{"https://panel.example", "https://0.0.0.0:8888"} {
+		t.Run(publicOrigin, func(t *testing.T) {
+			hash, err := bcrypt.GenerateFromPassword([]byte("testing-password-long"), 10)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := &config.Config{AdminUser: "admin", PasswordHash: string(hash), PublicOrigin: publicOrigin}
+			h, err := panelWithConfig(t, cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer h.(*panelHandler).Close()
+			// Login and upgrade both arrive over HTTP after TLS termination.
+			loginReq := httptest.NewRequest("POST", "http://panel.example/login", strings.NewReader("username=admin&password=testing-password-long"))
+			loginReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			loginReq.Header.Set("Origin", "https://panel.example")
+			loginW := httptest.NewRecorder()
+			h.ServeHTTP(loginW, loginReq)
+			if loginW.Code != 303 {
+				t.Fatalf("login: %d", loginW.Code)
+			}
+			c := loginW.Result().Cookies()[0]
+			for _, tc := range []struct {
+				origin string
+				want   int
+			}{
+				{"https://panel.example", 400}, // Accepted, only upgrade headers missing.
+				{"http://panel.example", 403},
+				{"https://evil.example", 403},
+				{"https://panel.example:444", 403},
+				{"https://user@panel.example", 403},
+				{"https://panel.example?query", 403},
+			} {
+				r := httptest.NewRequest("GET", "http://panel.example/ws/terminal", nil)
+				r.AddCookie(c)
+				r.Header.Set("Origin", tc.origin)
+				r.Header.Set("X-Forwarded-Proto", "https")
+				w := httptest.NewRecorder()
+				h.ServeHTTP(w, r)
+				if w.Code != tc.want {
+					t.Errorf("origin %q: got %d want %d", tc.origin, w.Code, tc.want)
+				}
+			}
+		})
 	}
 }

@@ -45,7 +45,7 @@ func newHandler(cfg *config.Config, files *sysinfo.Files, manager *sysinfo.Manag
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(static))))
 	mux.HandleFunc("GET /login", a.Login(tmpl))
 	mux.HandleFunc("POST /login", a.Login(tmpl))
-	// The Web Shell authenticates with the login session cookie like every
+	// The web terminal authenticates with the login session cookie like every
 	// other panel route; admission checks (enabled flag, read-only, origin)
 	// live inside Connect.
 	mux.Handle("GET /ws/terminal", a.Require(http.HandlerFunc(terminals.Connect)))

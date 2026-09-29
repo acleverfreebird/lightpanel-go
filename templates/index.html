@@ -27,7 +27,7 @@
       <button data-tab="processes"><span data-icon="processes" aria-hidden="true"></span>进程管理</button>
       <button data-tab="services"><span data-icon="services" aria-hidden="true"></span>系统服务</button>
       <button data-tab="logs"><span data-icon="logs" aria-hidden="true"></span>系统日志</button>
-      <button data-tab="terminal"><span data-icon="logs" aria-hidden="true"></span>Web Terminal</button>
+      <button data-tab="terminal"><span data-icon="terminal" aria-hidden="true"></span>终端</button>
       <button data-tab="firewall"><span data-icon="firewall" aria-hidden="true"></span>防火墙</button>
       <button id="task-center-open" type="button" class="task-nav" aria-haspopup="dialog" aria-controls="task-dialog"><span data-icon="tasks" aria-hidden="true"></span>任务中心<span id="task-count" class="task-count" hidden>0</span></button>
     </nav>
@@ -41,13 +41,18 @@
       {{if .ReadOnly}}<div class="notice">当前为只读模式。你可以查看数据、日志和下载文件，修改操作已禁用。</div>{{end}}
       <div id="message" role="status" aria-live="polite" hidden><span id="message-text"></span><button id="message-close" type="button" aria-label="关闭提示">×</button></div>
       <div id="loading" class="loading-indicator" role="status" hidden>正在更新数据…</div>
-      <section id="terminal" aria-label="Web Terminal" hidden>
-        <article class="panel">
-          <h2>Web Shell</h2>
-          <p>完整的交互式终端，直接在浏览器里操作服务器。命令以面板服务账号运行；root 部署下即 root 权限，请谨慎操作。</p>
-          <div class="page-tools"><p id="terminal-status" role="status">未连接</p><button id="terminal-connect" type="button">连接终端</button><button id="terminal-disconnect" type="button" class="secondary" disabled>断开</button></div>
+      <section id="terminal" aria-label="终端" hidden>
+        <div class="terminal-shell">
+          <div class="terminal-toolbar">
+            <span id="terminal-status" role="status" class="badge">未连接</span>
+            <span class="muted terminal-note">与服务器 Shell 完全一致的交互终端，命令以面板运行账号执行，请谨慎操作。</span>
+            <div class="terminal-actions">
+              <button id="terminal-clear" type="button" class="secondary" disabled>清屏</button>
+              <button id="terminal-reconnect" type="button" class="secondary" disabled>重新连接</button>
+            </div>
+          </div>
           <div id="terminal-container" aria-label="终端窗口"></div>
-        </article>
+        </div>
       </section>
       <section id="overview" aria-label="系统概览">
         <div class="host-banner"><div><span class="host-icon" data-icon="services" aria-hidden="true"></span><div><span class="host-kicker">SERVER / 当前主机</span><h2 id="host">正在连接服务器</h2><p id="host-subtitle">读取主机信息后显示资源状态</p></div></div><div class="banner-meta"><span class="badge" id="resource-status">等待采样</span><label class="toggle-label"><input id="auto-refresh" type="checkbox" checked>实时更新</label></div></div>
