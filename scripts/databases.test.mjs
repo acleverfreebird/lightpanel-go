@@ -49,10 +49,17 @@ test('database overview renders an error-free API response with omitted errors',
     if (!nodes.has(selector)) nodes.set(selector, node('div'));
     return nodes.get(selector);
   };
+  // renderEngines() syncs the create form's charset select after every refresh.
+  const createForm = node('form');
+  createForm.elements = { engine: node('select'), charset: node('select') };
+  nodes.set('#db-create-form', createForm);
+  const charsetLabel = node('label');
+  charsetLabel.querySelector = () => node('small');
+  nodes.set('#db-charset-label', charsetLabel);
   const tables = [];
   const context = vm.createContext({
     $, el: node, badge: text => node('span', text),
-    document: { querySelectorAll: () => [] },
+    document: { querySelectorAll: () => [], createTextNode: text => ({ text }) },
     api: async () => ({
       engines: ['mysql', 'mariadb', 'postgresql', 'redis'].map(engine => ({ engine, installed: false })),
       databases: {}, users: {}, units: {},
