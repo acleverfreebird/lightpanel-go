@@ -199,6 +199,19 @@ td .actions .text-button.danger-text { color: var(--danger); }
 .pagination { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; font-size: 12px; color: var(--muted); }
 .pagination > div { display: flex; gap: 8px; }
 .pagination button { min-height: 30px; padding: 4px 12px; font-size: 12px; }
+
+/* 数据库管理（宝塔式列表 + 备份中心 + SQL 控制台） */
+.password-cell { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.password-text { font-family: Consolas, monospace; font-size: 12px; max-width: 16em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.password-cell .text-button { padding: 3px 8px; min-height: 26px; font-size: 12px; }
+a.text-button { background: transparent; color: var(--muted); padding: 4px 10px; font-size: 13px; text-decoration: none; border-radius: var(--radius); }
+a.text-button:hover { color: var(--accent); background: var(--accent-soft); }
+#db-query-sql { font-family: Consolas, monospace; font-size: 12px; line-height: 1.6; resize: vertical; }
+#db-backup-dialog .toolbar { align-items: center; }
+#db-backup-dialog .toolbar .muted { flex: 1; }
+#db-credential-dialog .info-list dd { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+#db-credential-dialog .info-list code { font-family: Consolas, monospace; }
+#db-credential-dialog .info-list .text-button { padding: 2px 8px; min-height: 24px; font-size: 12px; }
 .upload-strip { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; border: 1px dashed #d4d9e0; border-radius: var(--radius); padding: 10px 14px; margin-bottom: 14px; background: #fafbfc; }
 .file-picker { position: relative; overflow: hidden; display: inline-flex; }
 .file-picker span { display: inline-flex; align-items: center; min-height: 32px; padding: 4px 14px; border: 1px solid #d4d9e0; border-radius: var(--radius); background: #fff; font-weight: 500; cursor: pointer; }

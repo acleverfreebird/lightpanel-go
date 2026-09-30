@@ -36,7 +36,10 @@ const (
 // v2: certbot issuance replaced by panel-side ACME; new site actions
 // ssl-apply / challenge-set / challenge-clear.
 // v3: new terminal operation relaying the web terminal's root PTY.
-const ProtocolVersion = 3
+// v4: database actions extended with one-step provisioning (create-db gains
+// user/password/charset/host), backups (backup / backup-list / backup-restore
+// / backup-delete) and the SQL console (query).
+const ProtocolVersion = 4
 
 // Relay framing for OpTerminal. After the helper answers the terminal request
 // with an OK Response, the connection stops speaking JSON: the panel sends
@@ -127,11 +130,16 @@ func ValidAppAction(action string) bool { return appActions[action] }
 // password is transported in the Request (never argv) and is fed to the
 // client binary over stdin helper-side, so it never appears in a process list.
 var dbActions = map[string]bool{
-	"list":         true, // read-only database (and user) listing
-	"create-db":    true, // create one database
-	"drop-db":      true, // drop one database
-	"create-user":  true, // create a local user with a password
-	"set-password": true, // change an existing user's password
+	"list":           true, // read-only database (and user) listing, with sizes
+	"create-db":      true, // create one database, optionally with its user and grants
+	"drop-db":        true, // drop one database
+	"create-user":    true, // create a local user with a password
+	"set-password":   true, // change an existing user's password
+	"backup":         true, // dump one database into the managed backup directory
+	"backup-list":    true, // list the managed backup files of one database
+	"backup-restore": true, // stream one managed backup file back into the database
+	"backup-delete":  true, // remove one managed backup file
+	"query":          true, // run one SQL batch against one database, return the output
 }
 
 // ValidDBAction reports whether action is a helper-permitted database operation.
@@ -177,6 +185,18 @@ type Request struct {
 	DB       string `json:"db,omitempty"`
 	Name     string `json:"name,omitempty"`
 	Password string `json:"password,omitempty"`
+	// One-step database provisioning (create-db). User defaults to Name when
+	// empty; Charset must pass ValidDBCharset for the engine (empty keeps the
+	// engine default) and Host is the MySQL account host (validated, escaped).
+	User    string `json:"user,omitempty"`
+	Charset string `json:"charset,omitempty"`
+	Host    string `json:"host,omitempty"`
+	// Backups: File must pass ValidBackupFile for the engine+name pair (the
+	// helper re-parses it, so it can never escape the backup directory).
+	File string `json:"file,omitempty"`
+	// SQL console: one batch of statements for the named database. Size-capped
+	// and fed to the client over stdin.
+	SQL string `json:"sql,omitempty"`
 }
 
 // Response is the helper's verdict. OK=false carries a human-readable Error

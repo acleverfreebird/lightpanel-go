@@ -247,6 +247,17 @@ func (s *server) handle(conn net.Conn) {
 	if req.Op == OpApp {
 		_ = conn.SetDeadline(time.Now().Add(appInstallDeadline))
 	}
+	// Database dumps and restores run under the task center on the panel
+	// side; grant them the full backup window. The SQL console is interactive
+	// but may legitimately need a minute on a cold cache.
+	if req.Op == OpDatabase {
+		switch req.Action {
+		case "backup", "backup-restore":
+			_ = conn.SetDeadline(time.Now().Add(dbBackupConnDeadline))
+		case "query":
+			_ = conn.SetDeadline(time.Now().Add(2 * time.Minute))
+		}
+	}
 	// The terminal relay answers and then streams for the session's lifetime;
 	// it manages its own deadlines and logging.
 	if req.Op == OpTerminal {
@@ -323,7 +334,7 @@ func (s *server) dispatch(uid int, req *Request) Response {
 		}
 		return s.appInstall(req)
 	case OpDatabase:
-		return s.database(req)
+		return s.database(uid, req)
 	default:
 		return Response{Error: "unknown operation"}
 	}

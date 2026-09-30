@@ -535,6 +535,9 @@ if [ "$LEGACY_ROOT" -eq 0 ]; then
   # 面板可写的 ACME 状态目录：内置 Let's Encrypt 客户端在此保存账号密钥、
   # 证书与元数据；nginx/apache 以 root 身份加载证书，无需放宽目录权限。
   install -d -o "$PANEL_USER" -g "$PANEL_USER" -m 0750 /var/lib/lightpanel/acme
+  # 数据库凭据备忘（面板创建的库/账号密码）保存于此，文件 0600，仅面板
+  # 用户可读。
+  install -d -o "$PANEL_USER" -g "$PANEL_USER" -m 0700 /var/lib/lightpanel/db
 fi
 
 # ---- systemd ----

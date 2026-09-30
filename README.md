@@ -33,11 +33,12 @@ pkg/sysinfo/sites.go         站点管理：环境识别、nginx/Apache 配置�
 pkg/sysinfo/certs.go         一键 SSL：内置 ACME 编排、签发任务与自动续期
 pkg/certs/certs.go           Let's Encrypt ACME 客户端（golang.org/x/crypto/acme）与证书存储
 pkg/sysinfo/apps.go          应用商店：应用目录状态检测、后台安装/卸载任务
-pkg/sysinfo/databases.go     数据库管理：引擎识别、库与用户列表、建库/删库/用户操作
+pkg/sysinfo/databases.go     数据库管理：引擎识别、库与用户列表、一步建库、备份/恢复/下载、SQL 控制台
+pkg/sysinfo/dbstore.go       数据库凭据备忘（面板创建的库/账号密码，0600 JSON 文件）
 pkg/helper/protocol.go       最小特权 helper 协议（请求/响应、目录校验）
 pkg/helper/sites.go          站点校验器/配置模板/托管目录规则（面板与 helper 共享）
 pkg/helper/apps.go           应用目录与软件包管理器安装参数白名单（面板与 helper 共享）
-pkg/helper/databases.go      数据库引擎/名称/密码校验与操作命令构建（面板与 helper 共享）
+pkg/helper/databases.go      数据库引擎/名称/密码校验与操作命令构建，备份文件名与 gzip 辅助（面板与 helper 共享）
 pkg/helper/acl.go            按服务/动作的授权 ACL 与防火墙参数白名单
 pkg/helper/client.go         面板侧 helper 客户端（unix socket）
 pkg/helper/server_linux.go   helper 服务端：SO_PEERCRED、白名单执行、更新安装
@@ -58,7 +59,7 @@ docs/SSL.md                  一键 SSL（内置 ACME）实现、存储布局与
 
 ### MVP 范围
 
-已实现：系统概览（指标趋势、主机信息、运行诊断、快捷入口）、进程搜索/分页/结束、systemd 服务管理（已加载与已安装单元、启停/重启/重载/开机自启）、全盘文件浏览/上传/下载/新建文件夹/重命名/在线编辑/递归删除/权限、版本检查与一键更新、单管理员登录和可选只读权限、系统/服务日志、防火墙端口规则、网站管理（宝塔式布局：站点表格 + 设置弹窗；自动识别 Nginx/Apache/Docker，浏览已配置站点，创建静态站点、反向代理或 Docker 容器部署，受控删除与重载；内置 ACME 客户端一键申请 Let's Encrypt 证书——不需要 certbot 等任何外部工具，支持强制 HTTPS、到期前 30 天自动续期与 Staging 测试证书）、应用商店（通过系统软件包管理器一键安装/卸载 Nginx/Apache/Docker/MySQL/MariaDB/PostgreSQL/Redis，安装与卸载均为后台任务并可查看进度与输出）、数据库管理（自动识别 MySQL/MariaDB/PostgreSQL/Redis，查看库与用户，建库/删库、创建用户与修改密码，引擎启停）。终端（Web Terminal）为宝塔风格的网页终端：侧栏打开即连，整页控制台（内置 xterm.js + 真 PTY，支持 vim/top、窗口自适应与 5000 行回滚），进入即 **root 登录 shell**（root 面板本地派生，非 root 面板经 helper 中继），复用面板登录会话，跨源握手拒绝、退出登录即时撤销并保留生命周期审计；详见 [终端](docs/WEB-TERMINAL.md)。
+已实现：系统概览（指标趋势、主机信息、运行诊断、快捷入口）、进程搜索/分页/结束、systemd 服务管理（已加载与已安装单元、启停/重启/重载/开机自启）、全盘文件浏览/上传/下载/新建文件夹/重命名/在线编辑/递归删除/权限、版本检查与一键更新、单管理员登录和可选只读权限、系统/服务日志、防火墙端口规则、网站管理（宝塔式布局：站点表格 + 设置弹窗；自动识别 Nginx/Apache/Docker，浏览已配置站点，创建静态站点、反向代理或 Docker 容器部署，受控删除与重载；内置 ACME 客户端一键申请 Let's Encrypt 证书——不需要 certbot 等任何外部工具，支持强制 HTTPS、到期前 30 天自动续期与 Staging 测试证书）、应用商店（通过系统软件包管理器一键安装/卸载 Nginx/Apache/Docker/MySQL/MariaDB/PostgreSQL/Redis，安装与卸载均为后台任务并可查看进度与输出）、数据库管理（自动识别 MySQL/MariaDB/PostgreSQL/Redis；宝塔式数据库表格：搜索、字符集、容量、账号与密码查看/复制；一步建库=建库+建号+授权+字符集+访问来源选择，凭据备忘保存在面板状态目录；每库备份中心：后台备份/恢复/下载/删除备份，流式 gzip 存放于 /var/backups/lightpanel/databases；内置 SQL 控制台直接对库执行语句并表格化展示结果；创建用户与修改密码，引擎启停）。终端（Web Terminal）为宝塔风格的网页终端：侧栏打开即连，整页控制台（内置 xterm.js + 真 PTY，支持 vim/top、窗口自适应与 5000 行回滚），进入即 **root 登录 shell**（root 面板本地派生，非 root 面板经 helper 中继），复用面板登录会话，跨源握手拒绝、退出登录即时撤销并保留生命周期审计；详见 [终端](docs/WEB-TERMINAL.md)。
 
 安全边界：这是有权限的主机管理工具，不是多租户容器。文件管理面向**整个文件系统**：所有接口只接受绝对路径，`..` 组件、反斜杠与 NUL 一律拒绝；`/proc`、`/sys`、`/dev`、`/run` 这四个虚拟系统目录拒绝删除与移动。下载/编辑读取只接受普通文件（符号链接若最终指向普通文件也可下载）；chmod 只接受普通文件与目录，且拒绝 setuid/setgid 与符号链接；只允许普通文件上传，禁止覆盖；目录删除默认要求为空，带 `recursive=true` 时递归删除且不允许删除根；在线编辑只处理 ≤1 MiB 且不含 NUL 的普通文件，保存先写临时文件再原子替换，且拒绝以符号链接为目标的写入。进程以 root 运行时这些接口等同 root 文件权限；默认的最小特权模式下面板以专用非特权用户 `lightpanel` 运行（见「最小特权 helper」），文件接口仅等同该用户权限。无论哪种模式，请务必启用 TLS/反代并保管好管理员密码。
 
@@ -107,11 +108,17 @@ API 默认必须登录。页面 `GET /` 未登录时跳转到 `/login`；API 返
 | GET | `/api/apps` | 应用商店总览：`package_manager`（apt-get/dnf/yum/zypper/apk 自动探测）+ `items`（固定目录 nginx/apache/docker/mysql/mariadb/postgresql/redis 的安装、运行、版本与分组 `group`） |
 | POST | `/api/apps/install` | `name`（必须是应用目录白名单键）；在后台启动安装任务并立即返回。同分组应用互斥（nginx 与 apache 同属 web 分组，一台主机只能安装一个网页服务器，被占用时返回 409）；同一应用同时只允许一个安装或卸载任务（占用中返回 409） |
 | POST | `/api/apps/remove` | `name`（必须是应用目录白名单键）；在后台启动卸载任务并立即返回，APT 下为 purge（同时清除配置文件与安装失败残留），同一应用同时只允许一个安装或卸载任务（占用中返回 409） |
-| GET | `/api/databases` | 数据库管理总览：`engines`（mysql/mariadb/postgresql/redis 的安装、运行与版本）+ `databases`/`users`（按引擎的库与用户列表，系统库/账号已过滤）+ `units`（各引擎的 systemd 单元，供启停按钮）+ `errors`（单个引擎列表失败原因） |
-| POST | `/api/databases/create` | `engine,name`；创建数据库（名称限字母/数字/下划线，最长 63 字符） |
-| POST | `/api/databases/delete` | `engine,name`；删除数据库（不可恢复） |
+| GET | `/api/databases` | 数据库管理总览：`engines`（mysql/mariadb/postgresql/redis 的安装、运行与版本）+ `databases`（按引擎的库列表，每行含 `name/charset/size`，面板创建的库附带 `user/password/host` 凭据备忘）+ `users`（按引擎的用户列表，系统库/账号已过滤）+ `units`（各引擎的 systemd 单元，供启停按钮）+ `errors`（单个引擎列表失败原因） |
+| POST | `/api/databases/create` | `engine,name[,user,password,charset,host]`；宝塔式一步创建：建库的同时创建同名账号并授权（`charset` 限白名单 utf8mb4/utf8/latin1/gbk/big5，PostgreSQL 固定引擎默认；`host` 为账号访问来源，缺省 localhost）。凭据备忘存入面板状态目录（0600），可在列表中查看与复制 |
+| POST | `/api/databases/delete` | `engine,name`；删除数据库（不可恢复），同时清除面板中保存的凭据备忘 |
 | POST | `/api/databases/user` | `engine,name,password`；创建本地用户（MySQL/MariaDB 为 `'user'@'localhost'`，PostgreSQL 为可登录角色） |
-| POST | `/api/databases/user-password` | `engine,name,password`；修改用户密码；密码经 stdin 传递给客户端程序，不出现在进程参数中 |
+| POST | `/api/databases/user-password` | `engine,name,password`；修改用户密码；密码经 stdin 传递给客户端程序，不出现在进程参数中；同时刷新面板中相关库的密码备忘 |
+| POST | `/api/databases/backup` | `engine,name`；启动后台备份任务（mysqldump/pg_dump 流式 gzip 写入 `/var/backups/lightpanel/databases/<引擎>_<库名>_<时间戳>.sql.gz`，0600），返回 `task_id` |
+| GET | `/api/databases/backups` | `engine,name`；列出该库的备份（时间、大小），最新在前 |
+| POST | `/api/databases/backup/restore` | `engine,name,file`；启动后台恢复任务，把备份重新导入数据库 |
+| POST | `/api/databases/backup/delete` | `engine,name,file`；删除一个备份文件（文件名经严格解析校验，无法越出备份目录） |
+| GET | `/api/databases/backup/download` | `engine,name,file`；流式下载备份文件 |
+| POST | `/api/databases/query` | `engine,name,sql`；SQL 控制台：以管理员身份在指定库上执行一批 SQL（≤32 KiB，60 秒超时），返回 TSV 结果 |
 | GET | `/api/health` | 运行诊断：UID 与模式（root/helper/普通/只读）、systemd 与系统工具可用性、helper 配置与可达性、中文告警；只读投影，不含路径与错误详情 |
 
 普通成功返回 JSON；操作失败返回纯文本与非 2xx。400 参数非法、401 未登录、403 权限/CSRF/Host 拒绝、404 文件不存在、409 文件冲突或进程变化、413 上传过大、429 登录限流、501 工具/内核能力不支持、502 系统命令失败、503 并发满、504 命令超时。服务命令错误不会伪装成成功。
@@ -144,10 +151,13 @@ API 默认必须登录。页面 `GET /` 未登录时跳转到 `/login`；API 返
 数据库管理语义：
 
 - 引擎检测：探测 mysqld/mariadbd/postgres/redis-server 二进制版本与 systemd 运行状态（`postgresql@*.service` 实例单元无法用 `is-active` 探测，以 `postgresql.service` 为准）；Redis 为键值型数据库，仅提供状态查看与启停，不提供库/用户管理。
-- 列表：MySQL/MariaDB 通过本机 socket 以 root 身份执行 `SHOW DATABASES` / 查询 `mysql.user`（依赖 root 的 socket/uvp 认证，Debian/Ubuntu 与 RHEL 系 MariaDB 默认满足）；PostgreSQL 通过 `runuser -u postgres -- psql` 执行。`information_schema`/`mysql`/`performance_schema`/`sys` 与系统账号不出现在列表中。
+- 列表：MySQL/MariaDB 通过本机 socket 以 root 身份查询 `information_schema`（库名、默认字符集与数据+索引容量）与 `mysql.user`（依赖 root 的 socket/uvp 认证，Debian/Ubuntu 与 RHEL 系 MariaDB 默认满足）；PostgreSQL 通过 `runuser -u postgres -- psql` 查询库名、编码与 `pg_database_size`。`information_schema`/`mysql`/`performance_schema`/`sys` 与系统账号不出现在列表中。
+- 一步建库（宝塔式）：添加数据库时同步创建账号并 `GRANT ALL PRIVILEGES`（MySQL 家族为一条 stdin SQL 批处理；PostgreSQL 为 `CREATE ROLE` + `CREATE DATABASE ... OWNER`，开启 `ON_ERROR_STOP`，失败不留半成品）。字符集限白名单（PostgreSQL 固定引擎默认——修改编码需要 template0 与匹配的 locale，面板不提供），访问来源可选 localhost / 所有 IP / 自定义网段。面板把创建的账号、密码与访问来源存入状态目录（`/var/lib/lightpanel/db/credentials.json`，0600，回退用户状态目录），列表中可随时查看、复制；改密后备忘同步刷新，面板外创建的库不显示备忘。
+- 备份/恢复：`mysqldump --single-transaction --quick --routines --events`（MariaDB 优先 `mariadb-dump`）或 `pg_dump` 的输出在进程内流式 gzip 写入固定目录 `/var/backups/lightpanel/databases`（0700/0711，文件 0600；helper 模式下把文件属主改为面板用户，使非特权面板可流式下载而目录不可列举）。备份与恢复都是后台任务；文件名 `<引擎>_<库名>_<时间戳>.sql.gz` 经双向解析校验（引擎、库名、时间戳逐段重验证），不存在路径穿越；恢复时在进程内解压流式喂给客户端，两条客户端链路都开启“遇错即停”。
+- SQL 控制台：以管理员身份在指定库执行一批 SQL（mysql `--batch` / psql `-A -F`，输出为带表头的 TSV，前端解析展示前 200 行）。面板本身即管理工具（另有 root 网页终端），SQL 不做语句级过滤；单批 ≤32 KiB、60 秒超时、输出上限 1 MiB。
 - 建库/删库/用户：数据库名限 `[a-zA-Z0-9_]`（1–63 字符），用户名限 `[a-zA-Z0-9_.-]`（1–32 字符）；全部 argv 由共享模块（`pkg/helper/databases.go`）在面板与 helper 两端重建。密码只经 stdin 渲染进 SQL，绝不出现在进程参数；含引号、反斜杠与 Unicode 的密码会被正确转义，但不允许控制字符。
 - 启停：数据库页的启动/停止/重启走系统服务页同一套 `POST /api/service/action`；`helper.services` 缺省通配放行所有单元，收紧模式下需加入对应单元（如 `mysql.service`、`postgresql.service`、`redis-server.service`）。
-- 最小特权模式：列表与变更经 helper 的 `database` 操作（`allow_databases = true`），helper 端重新校验引擎、名称与密码并重建全部命令；root 模式由面板直接执行。
+- 最小特权模式：列表、变更、备份与控制台经 helper 的 `database` 操作（`allow_databases = true`），helper 端重新校验引擎、名称与密码并重建全部命令；备份/恢复连接与子进程各有 30/29 分钟上限，任务中心可查进度；root 模式由面板直接执行。
 
 CPU/网络首次请求用于建立基线，后续返回采样间隔平均值；共享缓存最多每 2 秒采样一次。网络是非 loopback 接口汇总，虚拟网卡可能重复计数；磁盘显示根分区。进程只展示 UID、名称、状态、RSS，不收集可能包含密码的完整命令行。
 

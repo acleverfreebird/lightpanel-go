@@ -18,6 +18,7 @@ import (
 	"lightpanel/config"
 	"lightpanel/pkg/auth"
 	"lightpanel/pkg/certs"
+	"lightpanel/pkg/helper"
 	"lightpanel/pkg/sysinfo"
 	"lightpanel/pkg/terminal"
 )
@@ -100,12 +101,18 @@ func newHandler(cfg *config.Config, files *sysinfo.Files, manager *sysinfo.Manag
 	register("GET /api/tasks", tasks.Tasks)
 	register("GET /api/tasks/{id}", tasks.TaskDetail)
 	register("POST /api/tasks/clear", tasks.ClearFinished)
-	databases := sysinfo.NewDatabaseManager()
+	databases := sysinfo.NewDatabaseManager(tasks)
 	register("GET /api/databases", databases.Databases)
 	register("POST /api/databases/create", databases.DBCreate)
 	register("POST /api/databases/delete", databases.DBDrop)
 	register("POST /api/databases/user", databases.DBUserCreate)
 	register("POST /api/databases/user-password", databases.DBUserPassword)
+	register("POST /api/databases/backup", databases.DBBackup)
+	register("GET /api/databases/backups", databases.DBBackups)
+	register("POST /api/databases/backup/restore", databases.DBBackupRestore)
+	register("POST /api/databases/backup/delete", databases.DBBackupDelete)
+	register("GET /api/databases/backup/download", databases.DBBackupDownload)
+	register("POST /api/databases/query", databases.DBQuery)
 	return &panelHandler{Handler: security(cfg, files.UploadLimit(), mux), terminal: terminals, certs: sslCerts}, nil
 }
 
@@ -221,6 +228,8 @@ func security(cfg *config.Config, uploadLimit int64, next http.Handler) http.Han
 			limit = uploadLimit
 		case "/api/file/write":
 			limit = sysinfo.MaxEdit
+		case "/api/databases/query":
+			limit = helper.MaxDBSQL + (4 << 10) // one SQL batch plus form overhead
 		}
 		r.Body = http.MaxBytesReader(sw, r.Body, limit)
 		next.ServeHTTP(sw, r)

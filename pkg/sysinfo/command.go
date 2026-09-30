@@ -41,6 +41,7 @@ func executable(name string) (string, error) {
 		"apt-get", "dnf", "yum", "zypper", "apk",
 		// database engines and clients (detection and management)
 		"mysql", "mariadb", "mysqld", "mariadbd", "postgres", "psql", "createdb", "dropdb",
+		"mysqldump", "mariadb-dump", "pg_dump",
 		"runuser", "redis-server", "redis-cli":
 	default:
 		return "", ErrUnavailable
@@ -68,6 +69,33 @@ func RunCommandTimeout(parent context.Context, timeout time.Duration, name strin
 // Database user operations use it so passwords never appear in argv.
 func RunCommandStdin(parent context.Context, timeout time.Duration, stdin, name string, args ...string) (string, error) {
 	return runCommand(parent, timeout, stdin, name, args...)
+}
+
+// RunCommandStream streams the child's stdout into dst (a backup file) while
+// stderr stays captured for error reporting; stdin is optional. Dumps use it
+// because their output dwarfs every in-memory cap, restores because their
+// input is the (gunzipped) dump file.
+func RunCommandStream(parent context.Context, timeout time.Duration, stdin io.Reader, dst io.Writer, name string, args ...string) (string, error) {
+	p, err := executable(name)
+	if err != nil {
+		return "", err
+	}
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, p, args...)
+	cmd.Env = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "LANG=C", "LC_ALL=C", "SYSTEMD_PAGER=cat", "SYSTEMD_COLORS=0"}
+	cmd.WaitDelay = time.Second
+	if stdin != nil {
+		cmd.Stdin = stdin
+	}
+	cmd.Stdout = dst
+	var b limitedBuffer
+	cmd.Stderr = &b
+	err = cmd.Run()
+	if ctx.Err() != nil {
+		return b.String(), ctx.Err()
+	}
+	return b.String(), err
 }
 
 func runCommand(parent context.Context, timeout time.Duration, stdin, name string, args ...string) (string, error) {

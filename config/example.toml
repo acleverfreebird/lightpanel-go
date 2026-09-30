@@ -46,8 +46,9 @@ allow_sites = true
 # （nginx/apache/docker/mysql/mariadb/postgresql/redis）；
 # 应用名经白名单校验，全部安装与卸载参数在 helper 端重建。
 allow_apps = true
-# 数据库管理：列出/创建/删除数据库与用户管理；引擎、名称与全部参数在
-# helper 端重建，密码仅经 stdin 传递。
+# 数据库管理：列出/创建/删除数据库与用户管理、备份/恢复/下载与 SQL 控制台；
+# 引擎、名称与全部参数在 helper 端重建，密码仅经 stdin 传递。备份存放于
+# /var/backups/lightpanel/databases。
 allow_databases = true
 # 网页终端经 helper 中继 root PTY：终端页直接进入 root 登录 shell（与宝塔
 # 面板一致），非 root 面板必须开启；关闭后非 root 面板的终端以明确错误
