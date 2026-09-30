@@ -62,8 +62,8 @@ func ValidProxyTarget(target string) bool {
 	return true
 }
 
-// ValidEmail bounds ACME registration addresses syntactically; certbot does
-// the real verification against the CA.
+// ValidEmail bounds ACME registration addresses syntactically; the ACME
+// server does the real verification.
 func ValidEmail(email string) bool { return len(email) <= 254 && emailPattern.MatchString(email) }
 
 // ValidServerName accepts DNS hostnames, one leading wildcard label and the
@@ -178,9 +178,31 @@ const PlaceholderIndex = `<!doctype html>
 </html>
 `
 
+// ChallengeDir 是 ACME HTTP-01 挑战文件的固定存放目录：由 helper（root）
+// 写入，权限对网页服务器 worker 可读（目录 0755、文件 0644）。面板与 helper
+// 共用该常量，保证生成的站点配置里 alias/Alias 指向一致。
+const ChallengeDir = "/var/lib/lightpanel/acme-challenges"
+
+// SSLConf 描述叠加在站点基础配置之上的 HTTPS 设置。Challenge 为 true 时
+// 输出中始终包含 ACME 挑战 location（签发与自动续期都依赖它）。
+type SSLConf struct {
+	Enabled    bool
+	ForceHTTPS bool
+	CertFile   string
+	KeyFile    string
+	Challenge  bool
+}
+
 // SiteConf renders the complete server-block/VirtualHost file for a site.
 // kind is "static" or "proxy"; proxy sites ignore root and use proxyTarget.
 func SiteConf(engine, kind, name, domain string, port int, root, proxyTarget string) (string, error) {
+	return SiteConfEx(engine, kind, name, domain, port, root, proxyTarget, SSLConf{})
+}
+
+// SiteConfEx 是 SiteConf 的完整版本，支持 HTTPS 服务器块、强制 HTTPS 跳转
+// 与 ACME HTTP-01 挑战 location。启用 SSL 时在原监听端口保留 HTTP 入口
+// （含挑战路径），并在 443 端口输出 SSL 服务器块。
+func SiteConfEx(engine, kind, name, domain string, port int, root, proxyTarget string, ssl SSLConf) (string, error) {
 	if !ValidSiteEngine(engine) {
 		return "", errors.New("engine must be nginx or apache")
 	}
@@ -196,6 +218,11 @@ func SiteConf(engine, kind, name, domain string, port int, root, proxyTarget str
 	if !ValidServerName(domain) {
 		return "", errors.New("invalid server name")
 	}
+	if ssl.Enabled {
+		if !ValidPemPath(ssl.CertFile) || !ValidPemPath(ssl.KeyFile) {
+			return "", errors.New("invalid certificate path")
+		}
+	}
 	if kind == "proxy" {
 		if !ValidProxyTarget(proxyTarget) {
 			return "", errors.New("invalid proxy target")
@@ -203,28 +230,123 @@ func SiteConf(engine, kind, name, domain string, port int, root, proxyTarget str
 	} else if !ValidDocumentRoot(root) {
 		return "", errors.New("invalid site root path")
 	}
-	body := ManagedMarker + " — site: " + name + "\n"
 	if engine == "nginx" {
-		body += "server {\n    listen " + strconv.Itoa(port) + ";\n    server_name " + domain + ";\n"
-		if kind == "static" {
-			body += "    root " + root + ";\n    index index.html index.htm;\n\n    location / {\n        try_files $uri $uri/ =404;\n    }\n"
+		return nginxConf(kind, name, domain, port, root, proxyTarget, ssl), nil
+	}
+	return apacheConf(kind, name, domain, port, root, proxyTarget, ssl), nil
+}
+
+// homeStateSuffix 是面板状态目录的 HOME 回退形态（无 /var/lib/lightpanel
+// 写权限时面板退回到 <home>/.local/state/lightpanel/acme）。
+const homeStateSuffix = ".local/state/lightpanel/acme/certs/"
+
+// ValidPemPath 限制 SSL 证书/私钥只能来自面板自己的证书目录（或该目录不
+// 存在时的状态目录回退路径），防止 helper 把任意文件嵌入 nginx 配置。
+func ValidPemPath(path string) bool {
+	if !ValidAbsPath(path) || !strings.HasSuffix(path, ".pem") {
+		return false
+	}
+	if strings.HasPrefix(path, "/var/lib/lightpanel/acme/certs/") {
+		return true
+	}
+	if strings.HasPrefix(path, "/root/"+homeStateSuffix) {
+		return true
+	}
+	if rest, ok := strings.CutPrefix(path, "/home/"); ok {
+		user, sub, found := strings.Cut(rest, "/")
+		return found && user != "" && strings.HasPrefix(sub, homeStateSuffix)
+	}
+	return false
+}
+
+func nginxConf(kind, name, domain string, port int, root, proxyTarget string, ssl SSLConf) string {
+	challenge := ""
+	if ssl.Challenge {
+		challenge = "    location ^~ /.well-known/acme-challenge/ {\n        alias " + ChallengeDir + "/;\n    }\n"
+	}
+	body := func(https bool) string {
+		out := "server {\n"
+		if https {
+			out += "    listen 443 ssl;\n    server_name " + domain + ";\n"
+			out += "    ssl_certificate " + ssl.CertFile + ";\n    ssl_certificate_key " + ssl.KeyFile + ";\n"
+			out += "    ssl_protocols TLSv1.2 TLSv1.3;\n"
 		} else {
-			body += "\n    location / {\n        proxy_pass " + proxyTarget + ";\n        proxy_set_header Host $host;\n        proxy_set_header X-Real-IP $remote_addr;\n        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n        proxy_set_header X-Forwarded-Proto $scheme;\n    }\n"
+			out += "    listen " + strconv.Itoa(port) + ";\n    server_name " + domain + ";\n"
 		}
-		body += "}\n"
-		return body, nil
+		out += challenge
+		if https {
+			out += nginxLocation(kind, root, proxyTarget)
+		} else if ssl.Enabled && ssl.ForceHTTPS {
+			// 重定向放在 location / 中而不是 server 级 return，保证挑战
+			// 路径始终可直达，续期不会被强制跳转打断。
+			out += "    location / {\n        return 301 https://$host$request_uri;\n    }\n"
+		} else {
+			out += nginxLocation(kind, root, proxyTarget)
+		}
+		out += "}\n"
+		return out
 	}
-	if port != 80 && port != 443 {
-		body += "Listen " + strconv.Itoa(port) + "\n\n"
+	out := ManagedMarker + " — site: " + name + "\n"
+	out += body(false)
+	if ssl.Enabled {
+		out += body(true)
 	}
-	body += "<VirtualHost *:" + strconv.Itoa(port) + ">\n    ServerName " + domain + "\n"
+	return out
+}
+
+func nginxLocation(kind, root, proxyTarget string) string {
 	if kind == "static" {
-		body += "    DocumentRoot " + root + "\n\n    <Directory " + root + ">\n        Require all granted\n    </Directory>\n"
-	} else {
-		body += "\n    ProxyPreserveHost On\n    ProxyPass / " + proxyTarget + "\n    ProxyPassReverse / " + proxyTarget + "\n"
+		return "    root " + root + ";\n    index index.html index.htm;\n\n    location / {\n        try_files $uri $uri/ =404;\n    }\n"
 	}
-	body += "</VirtualHost>\n"
-	return body, nil
+	return "\n    location / {\n        proxy_pass " + proxyTarget + ";\n        proxy_set_header Host $host;\n        proxy_set_header X-Real-IP $remote_addr;\n        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n        proxy_set_header X-Forwarded-Proto $scheme;\n    }\n"
+}
+
+func apacheConf(kind, name, domain string, port int, root, proxyTarget string, ssl SSLConf) string {
+	challenge := ""
+	if ssl.Challenge {
+		challenge = "    Alias /.well-known/acme-challenge/ " + ChallengeDir + "/\n" +
+			"    <Directory " + ChallengeDir + ">\n        Require all granted\n    </Directory>\n"
+	}
+	// 强制 HTTPS 用 RedirectMatch 排除挑战路径；Apache 会先匹配
+	// Redirect(Match) 再匹配 Alias，负向前瞻保证挑战请求不受影响。
+	redirect := ""
+	if ssl.Enabled && ssl.ForceHTTPS && domain != "_" {
+		redirect = "    RedirectMatch permanent ^/(?!\\.well-known/acme-challenge/)(.*)$ https://" + domain + "/$1\n"
+	}
+	content := ""
+	if kind == "static" {
+		content = "    DocumentRoot " + root + "\n\n    <Directory " + root + ">\n        Require all granted\n    </Directory>\n"
+	} else {
+		content = "\n    ProxyPreserveHost On\n    ProxyPass / " + proxyTarget + "\n    ProxyPassReverse / " + proxyTarget + "\n"
+	}
+	body := func(https bool) string {
+		out := "<VirtualHost *:" + strconv.Itoa(httpPort(port, https)) + ">\n"
+		out += "    ServerName " + domain + "\n"
+		if https {
+			out += "    SSLEngine on\n    SSLCertificateFile " + ssl.CertFile + "\n    SSLCertificateKeyFile " + ssl.KeyFile + "\n"
+		} else {
+			out += challenge + redirect
+		}
+		out += content
+		out += "</VirtualHost>\n"
+		return out
+	}
+	out := ManagedMarker + " — site: " + name + "\n"
+	if port != 80 && port != 443 {
+		out += "Listen " + strconv.Itoa(port) + "\n\n"
+	}
+	out += body(false)
+	if ssl.Enabled {
+		out += body(true)
+	}
+	return out
+}
+
+func httpPort(port int, https bool) int {
+	if https {
+		return 443
+	}
+	return port
 }
 
 // ErrConflict is returned when a site, file or container already exists.

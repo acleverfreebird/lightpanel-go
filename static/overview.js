@@ -2,7 +2,7 @@ import { $, api, el, message } from './ui.js';
 import { size, percent, duration } from './format.js';
 import { icon } from './icons.js';
 
-const COLORS = { cpu: '#c05a30', memory: '#6d78b8', disk: '#a48132', net: '#347f81' };
+const COLORS = { cpu: '#20a53a', memory: '#3b82d8', disk: '#e6a23c', net: '#7b5cd6' };
 const samples = [];
 let version = 0;
 let cards = null;
@@ -121,9 +121,9 @@ function drawChart() {
   ctx.font = '11px sans-serif';
   [0, 25, 50, 75, 100].forEach(value => {
     const y = bottom - value / 100 * (bottom - top);
-    ctx.fillStyle = '#848b7b';
+    ctx.fillStyle = '#a5adb8';
     ctx.fillText(`${value}%`, 0, y + 4);
-    ctx.strokeStyle = value === 0 ? '#dce1d3' : '#eff1e9';
+    ctx.strokeStyle = value === 0 ? '#d4d9e0' : '#edf0f4';
     ctx.lineWidth = 1;
     ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(width, y); ctx.stroke();
   });
@@ -147,8 +147,8 @@ function drawChart() {
           ctx.lineTo(points[0][0], bottom);
           ctx.closePath();
           const grad = ctx.createLinearGradient(0, top, 0, bottom);
-          grad.addColorStop(0, 'rgba(192,90,48,.18)');
-          grad.addColorStop(1, 'rgba(192,90,48,0)');
+          grad.addColorStop(0, 'rgba(32,165,58,.18)');
+          grad.addColorStop(1, 'rgba(32,165,58,0)');
           ctx.fillStyle = grad;
           ctx.fill();
         }

@@ -16,19 +16,19 @@ hydrateIcons();
 
 const pageKickers = {
   terminal: 'OPS / 终端',
-  overview: 'OVERVIEW / 系统总览', processes: 'OPERATIONS / 进程',
-  services: 'OPERATIONS / 服务', apps: 'DEPLOY / 应用', sites: 'DEPLOY / 站点',
+  overview: 'OVERVIEW', processes: 'OPERATIONS / 进程',
+  services: 'OPERATIONS / 服务', apps: 'DEPLOY / 应用', sites: 'DEPLOY / 网站',
   databases: 'DEPLOY / 数据', files: 'OPERATIONS / 文件',
-  logs: 'OPERATIONS / 日志', firewall: 'SECURITY / 访问控制',
+  logs: 'OPERATIONS / 日志', firewall: 'SECURITY / 防火墙',
 };
 
 const pages = {
   terminal: ['终端', '打开即连的服务器终端，与本地 Shell 体验一致。', () => terminal.activate()],
-  overview: ['系统概览', '掌握资源使用情况，让每一次运维都有据可循。', () => Promise.all([overview(), diagnostics()])],
+  overview: ['首页', '掌握资源使用情况，让每一次运维都有据可循。', () => Promise.all([overview(), diagnostics()])],
   processes: ['进程管理', '定位资源占用，安全地管理正在运行的进程。', processes],
   services: ['系统服务', '快速筛选服务状态，查看详情并执行维护操作。', services],
   apps: ['应用商店', '一键安装网页服务器与配套组件，部署环境一步到位。', apps],
-  sites: ['站点管理', '自动识别网页服务器与 Docker，部署和管理站点。', sites],
+  sites: ['网站管理', '部署站点、绑定域名，一键申请与续期 SSL 证书。', sites],
   databases: ['数据库管理', '识别数据库引擎，管理数据库、用户与服务状态。', databases],
   files: ['文件管理', '浏览和管理服务器上的全部文件与目录。', files],
   logs: ['系统日志', '从系统事件到服务日志，让问题排查更有方向。', logs],
@@ -79,7 +79,7 @@ function navigate(name, focus = false) {
   $('#top-title').textContent = $('#page-title').textContent = pages[current][0];
   $('#page-description').textContent = pages[current][1];
   $('#page-kicker').textContent = pageKickers[current];
-  document.title = `${pages[current][0]} · LightPanel`;
+  document.title = `${pages[current][0]} · LightPanel 控制面板`;
   message('');
   if (focus) $('#workspace').focus({ preventScroll: true });
   refresh(true);

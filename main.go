@@ -173,6 +173,8 @@ func run() error {
 	server := &http.Server{Addr: net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port)), Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 60 * time.Second, WriteTimeout: 60 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10, TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12}}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	// 内置 ACME 自动续期：每 6 小时扫描证书库，30 天内到期的自动重签。
+	handler.(*panelHandler).StartRenewal(ctx)
 	done := make(chan error, 1)
 	go func() {
 		if cfg.TLSCert != "" {

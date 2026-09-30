@@ -145,13 +145,6 @@ func (m *SiteManager) detectEnvironment(ctx context.Context) []EngineInfo {
 	} else {
 		env[2].Detail = "daemon unreachable: " + helper.TrimOutput(firstLine(out))
 	}
-	// certbot gates Let's Encrypt issuance; without it the certificate panel
-	// reports 501 and the per-site action is hidden by the frontend.
-	if out, err := m.Run(ctx, "certbot", "--version"); err == nil {
-		env = append(env, EngineInfo{Engine: "certbot", Installed: true, Version: firstLine(out)})
-	} else {
-		env = append(env, EngineInfo{Engine: "certbot", Installed: false, Detail: ErrUnavailable.Error()})
-	}
 	return env
 }
 
@@ -910,75 +903,8 @@ func (m *SiteManager) SiteAction(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// ---- HTTPS certificates (Let's Encrypt via certbot) ----
-
-// Certificates reports certbot availability and the local certificate list.
-// certbot output is shown verbatim (failures included) so the admin can see
-// why a listing is empty or stale.
-func (m *SiteManager) Certificates(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	out, routed, err := privileged(ctx, helper.Request{Op: helper.OpSite, Action: "cert-status"})
-	if !routed {
-		out, err = m.Run(ctx, "certbot", "certificates")
-	}
-	installed := !errors.Is(err, ErrUnavailable)
-	if !installed {
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		w.WriteHeader(501)
-		_ = json.NewEncoder(w).Encode(struct {
-			Installed bool   `json:"installed"`
-			Output    string `json:"output"`
-			Error     string `json:"error,omitempty"`
-		}{false, out, helper.TrimOutput(err.Error())})
-		return
-	}
-	errText := ""
-	if err != nil {
-		errText = helper.TrimOutput(err.Error())
-	}
-	JSON(w, struct {
-		Installed bool   `json:"installed"`
-		Output    string `json:"output"`
-		Error     string `json:"error,omitempty"`
-	}{installed, out, errText})
-}
-
-// IssueCert requests a Let's Encrypt certificate for one domain with certbot.
-// The engine installer plugin rewrites the site's server block for HTTPS.
-// Validation stays synchronous; the ACME round-trip itself runs as a
-// task-center task so the HTTP request returns immediately.
-func (m *SiteManager) IssueCert(w http.ResponseWriter, r *http.Request) {
-	domain := strings.TrimSpace(r.FormValue("domain"))
-	email := strings.TrimSpace(r.FormValue("email"))
-	engine := r.FormValue("engine")
-	if !validServerName(domain) || domain == "_" || strings.HasPrefix(domain, "*.") {
-		http.Error(w, "certificate issuance needs one concrete domain (wildcards require DNS-01)", 400)
-		return
-	}
-	if !helper.ValidEmail(email) {
-		http.Error(w, "a valid registration email is required", 400)
-		return
-	}
-	if engine != "nginx" && engine != "apache" {
-		http.Error(w, "engine must be nginx or apache", 400)
-		return
-	}
-	tasks := m.TaskCenter()
-	if tasks.Running("issue-cert", domain) {
-		http.Error(w, "a certificate is already being issued for this domain", 409)
-		return
-	}
-	task := tasks.Start("issue-cert", domain, "签发证书 "+domain, func(ctx context.Context, appendOut func(string)) error {
-		// The panel forwards with a long deadline so the ACME round-trip survives.
-		cctx, cancel := context.WithTimeout(ctx, 300*time.Second)
-		defer cancel()
-		args := []string{"-n", "--agree-tos", "-m", email, "-d", domain, "--" + engine}
-		out, routed, err := privileged(cctx, helper.Request{Op: helper.OpSite, Action: "issue-cert", Domain: domain, Email: email, Engine: engine})
-		if !routed {
-			out, err = m.RunTimeout(cctx, 280*time.Second, "certbot", args...)
-		}
-		appendOut(helper.TrimOutput(out))
-		return err
-	})
-	JSON(w, map[string]string{"message": "certificate issuance started for " + domain, "task_id": task.ID})
-}
+// ---- HTTPS certificates ----
+//
+// Certificate issuance moved to certs.go: the panel runs its own ACME client
+// against Let's Encrypt (no certbot), and the privileged helper applies the
+// generated configuration. See pkg/sysinfo/certs.go.

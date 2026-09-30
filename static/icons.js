@@ -1,6 +1,6 @@
 // Small, local icon vocabulary. No fonts, network requests or HTML injection.
 const paths = {
-  overview: 'M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z',
+  home: 'M4 11l8-7 8 7 M6 10v10h12V10 M10 20v-6h4v6',
   processes: 'M3 12h4l3-8 4 16 3-8h4',
   services: 'M4 4h16v6H4z M4 14h16v6H4z M7 7h.01 M7 17h.01 M15 7h2 M15 17h2',
   apps: 'M12 3l9 5-9 5-9-5z M3 8v9l9 5 9-5V8 M12 13v9',
@@ -18,6 +18,9 @@ const paths = {
   disk: 'M6 4h12l3 10v6H3v-6z M3 14h18 M16 17h2',
   network: 'M8 3v17 M3 8l5-5 5 5 M16 21V4 M11 16l5 5 5-5',
   tasks: 'M8 3h8v4H8z M5 5v16h14V5 M9 13l2 2 4-4',
+  server: 'M4 4h16v6H4z M4 14h16v6H4z M7.5 7h.01 M7.5 17h.01 M16 7h1 M16 17h1',
+  plus: 'M12 5v14 M5 12h14',
+  lock: 'M6 11h12v9H6z M8 11V7a4 4 0 0 1 8 0v4 M9.5 15.5h.01',
 };
 
 export function icon(name) {
@@ -27,7 +30,7 @@ export function icon(name) {
   svg.setAttribute('aria-hidden', 'true');
   svg.setAttribute('focusable', 'false');
   const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-  path.setAttribute('d', paths[name] || paths.overview);
+  path.setAttribute('d', paths[name] || paths.home);
   svg.append(path);
   return svg;
 }

@@ -231,11 +231,11 @@ func (s *server) handle(conn net.Conn) {
 	if err := json.NewDecoder(bufio.NewReader(io.LimitReader(conn, requestLimit))).Decode(&req); err != nil {
 		return
 	}
-	// Certificate issuance waits on the ACME network round-trip; extend the
-	// connection budget for it. Package installs wait on mirrors and can run
-	// for several minutes. Everything else keeps the 60s bound.
-	if req.Op == OpSite && (req.Action == "issue-cert" || req.Action == "cert-status") {
-		_ = conn.SetDeadline(time.Now().Add(5 * time.Minute))
+	// ssl-apply waits on the engine's configuration test and reload; app
+	// installs wait on mirrors and can run for several minutes. Everything
+	// else keeps the 60s bound.
+	if req.Op == OpSite && req.Action == "ssl-apply" {
+		_ = conn.SetDeadline(time.Now().Add(90 * time.Second))
 	}
 	if req.Op == OpApp {
 		_ = conn.SetDeadline(time.Now().Add(appInstallDeadline))

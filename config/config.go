@@ -62,7 +62,7 @@ type HelperConfig struct {
 	// AllowUpdate 允许安装经 SHA256 校验的在线更新并重启面板服务。
 	AllowUpdate bool `toml:"allow_update"`
 	// AllowSites 允许托管站点操作：写入站点配置（helper 端从校验后的参数
-	// 重新生成内容）、删除带托管标记的配置、重载引擎与 certbot 证书签发。
+	// 重新生成内容）、删除带托管标记的配置、重载引擎与一键 HTTPS 配置。
 	AllowSites bool `toml:"allow_sites"`
 	// AllowApps 允许应用商店安装：helper 通过系统软件包管理器安装固定目录
 	// 中的应用；应用名经白名单校验，全部参数在 helper 端重建。

@@ -30,6 +30,8 @@ pkg/sysinfo/update.go        检查 GitHub Release、校验 SHA256、替换二�
 pkg/sysinfo/logs.go          journalctl 系统与服务日志
 pkg/sysinfo/firewall.go      UFW/firewalld 状态和端口规则
 pkg/sysinfo/sites.go         站点管理：环境识别、nginx/Apache 配置解析、静态站点与 Docker 部署
+pkg/sysinfo/certs.go         一键 SSL：内置 ACME 编排、签发任务与自动续期
+pkg/certs/certs.go           Let's Encrypt ACME 客户端（golang.org/x/crypto/acme）与证书存储
 pkg/sysinfo/apps.go          应用商店：应用目录状态检测、后台安装/卸载任务
 pkg/sysinfo/databases.go     数据库管理：引擎识别、库与用户列表、建库/删库/用户操作
 pkg/helper/protocol.go       最小特权 helper 协议（请求/响应、目录校验）
@@ -41,7 +43,7 @@ pkg/helper/client.go         面板侧 helper 客户端（unix socket）
 pkg/helper/server_linux.go   helper 服务端：SO_PEERCRED、白名单执行、更新安装
 pkg/**/*_test.go             安全边界与解析测试
 server_test.go              路由、登录、权限、文件流程、审计测试
-static/app.js, app.css       无第三方框架的响应式管理界面
+static/app.js, app.css       无第三方框架的宝塔式管理界面（深色侧栏、绿色主调、首页仪表盘）
 templates/*.html            登录页与管理页模板
 config/example.toml        无预置密码的配置样例与升级迁移模板
 lightpanel.service          systemd 单元（非特权面板）
@@ -51,11 +53,12 @@ Makefile                    Linux amd64/arm64 构建与测试
 .github/workflows/ci.yml       push/PR 时运行 vet、race 测试、双架构构建、JS 测试与本机 HTTP 冒烟
 scripts/smoke.py             可选开发验证脚本（非运行依赖）
 docs/VALIDATION.md           验证记录与已知限制
+docs/SSL.md                  一键 SSL（内置 ACME）实现、存储布局与已知限制
 ```
 
 ### MVP 范围
 
-已实现：系统概览（指标趋势、主机信息、运行诊断）、进程搜索/分页/结束、systemd 服务管理（已加载与已安装单元、启停/重启/重载/开机自启）、全盘文件浏览/上传/下载/新建文件夹/重命名/在线编辑/递归删除/权限、版本检查与一键更新、单管理员登录和可选只读权限、系统/服务日志、防火墙端口规则、站点管理（自动识别 Nginx/Apache/Docker/certbot，浏览已配置站点，创建静态站点、反向代理或 Docker 容器部署，Let's Encrypt 证书签发，受控删除与重载）、应用商店（通过系统软件包管理器一键安装/卸载 Nginx/Apache/Docker/certbot/MySQL/MariaDB/PostgreSQL/Redis，安装与卸载均为后台任务并可查看进度与输出）、数据库管理（自动识别 MySQL/MariaDB/PostgreSQL/Redis，查看库与用户，建库/删库、创建用户与修改密码，引擎启停）。终端（Web Terminal）为宝塔风格的网页终端：侧栏打开即连，整页控制台（内置 xterm.js + 真 PTY，支持 vim/top、窗口自适应与 5000 行回滚），复用面板登录会话，跨源握手拒绝、退出登录即时撤销并保留生命周期审计；详见 [终端](docs/WEB-TERMINAL.md)。
+已实现：系统概览（指标趋势、主机信息、运行诊断、快捷入口）、进程搜索/分页/结束、systemd 服务管理（已加载与已安装单元、启停/重启/重载/开机自启）、全盘文件浏览/上传/下载/新建文件夹/重命名/在线编辑/递归删除/权限、版本检查与一键更新、单管理员登录和可选只读权限、系统/服务日志、防火墙端口规则、网站管理（宝塔式布局：站点表格 + 设置弹窗；自动识别 Nginx/Apache/Docker，浏览已配置站点，创建静态站点、反向代理或 Docker 容器部署，受控删除与重载；内置 ACME 客户端一键申请 Let's Encrypt 证书——不需要 certbot 等任何外部工具，支持强制 HTTPS、到期前 30 天自动续期与 Staging 测试证书）、应用商店（通过系统软件包管理器一键安装/卸载 Nginx/Apache/Docker/MySQL/MariaDB/PostgreSQL/Redis，安装与卸载均为后台任务并可查看进度与输出）、数据库管理（自动识别 MySQL/MariaDB/PostgreSQL/Redis，查看库与用户，建库/删库、创建用户与修改密码，引擎启停）。终端（Web Terminal）为宝塔风格的网页终端：侧栏打开即连，整页控制台（内置 xterm.js + 真 PTY，支持 vim/top、窗口自适应与 5000 行回滚），复用面板登录会话，跨源握手拒绝、退出登录即时撤销并保留生命周期审计；详见 [终端](docs/WEB-TERMINAL.md)。
 
 安全边界：这是有权限的主机管理工具，不是多租户容器。文件管理面向**整个文件系统**：所有接口只接受绝对路径，`..` 组件、反斜杠与 NUL 一律拒绝；`/proc`、`/sys`、`/dev`、`/run` 这四个虚拟系统目录拒绝删除与移动。下载/编辑读取只接受普通文件（符号链接若最终指向普通文件也可下载）；chmod 只接受普通文件与目录，且拒绝 setuid/setgid 与符号链接；只允许普通文件上传，禁止覆盖；目录删除默认要求为空，带 `recursive=true` 时递归删除且不允许删除根；在线编辑只处理 ≤1 MiB 且不含 NUL 的普通文件，保存先写临时文件再原子替换，且拒绝以符号链接为目标的写入。进程以 root 运行时这些接口等同 root 文件权限；默认的最小特权模式下面板以专用非特权用户 `lightpanel` 运行（见「最小特权 helper」），文件接口仅等同该用户权限。无论哪种模式，请务必启用 TLS/反代并保管好管理员密码。
 
@@ -96,12 +99,12 @@ API 默认必须登录。页面 `GET /` 未登录时跳转到 `/login`；API 返
 | GET | `/api/logs` | `name` 可选；`lines=1..1000` 默认 200 |
 | GET | `/api/firewall` | `engine=ufw或firewalld` 可选；返回状态与规则文本 |
 | POST | `/api/firewall/rule` | `engine,port=1..65535,protocol=tcp或udp,action` |
-| GET | `/api/sites` | 站点管理总览：`environment`（nginx/apache/docker/certbot 的安装、运行与版本）+ `items`（解析 nginx `sites-enabled`/`conf.d` 与 Apache `sites-enabled`/`conf.d` 得到的 server 块/VirtualHost，以及发布了端口的 Docker 容器） |
+| GET | `/api/sites` | 网站管理总览：`environment`（nginx/apache/docker 的安装、运行与版本）+ `items`（解析 nginx `sites-enabled`/`conf.d` 与 Apache `sites-enabled`/`conf.d` 得到的 server 块/VirtualHost，以及发布了端口的 Docker 容器） |
 | POST | `/api/sites/create` | `name,engine=auto或nginx或apache或docker,mode=static或proxy,domain,port,root(静态),proxy_target(反代),image,container_port(Docker)`；原生模式由面板或 helper 生成站点配置（静态：try_files；反代：proxy_pass/ProxyPass，Apache 反代需要 mod_proxy），Debian 系写入 sites-available 并软链，RHEL 系写入 conf.d，随后重载引擎；Docker 模式以 `lightpanel-<name>` 启动带 `lightpanel.site` 标签、`--restart unless-stopped` 的容器并映射端口 |
 | POST | `/api/sites/action` | `id,op=start或stop或delete或reload,engine`；Docker 仅允许对带面板标签/名称前缀的容器操作；原生删除仅允许删除含 `# managed by lightpanel` 标记的配置，删除后重载引擎 |
-| GET | `/api/sites/certs` | certbot 证书列表（原文输出）；certbot 未安装返回 501 |
-| POST | `/api/sites/cert` | `domain,email,engine=nginx或apache`；certbot HTTP-01 为单个具体域名签发证书并自动改写站点配置启用 HTTPS（通配符域名需 DNS-01，不支持） |
-| GET | `/api/apps` | 应用商店总览：`package_manager`（apt-get/dnf/yum/zypper/apk 自动探测）+ `items`（固定目录 nginx/apache/docker/certbot/mysql/mariadb/postgresql/redis 的安装、运行、版本与分组 `group`） |
+| GET | `/api/sites/certs` | 已签发证书列表（域名、颁发者、有效期、剩余天数、staging 标记与签发时的站点参数）及证书存储目录 |
+| POST | `/api/sites/ssl` | `op=issue,id,email?,force_https?,staging?`：面板内置 ACME 客户端通过 HTTP-01 为托管站点的具体域名签发 Let's Encrypt 证书，经 helper 写入挑战文件并改写站点配置启用 HTTPS（`nginx -t`/`apachectl configtest` 失败自动回滚），签发流程为后台任务；`op=off,id` 关闭 SSL 并重载。仅支持面板创建（带托管标记）的 Nginx/Apache 站点；通配符域名需 DNS-01，暂不支持 |
+| GET | `/api/apps` | 应用商店总览：`package_manager`（apt-get/dnf/yum/zypper/apk 自动探测）+ `items`（固定目录 nginx/apache/docker/mysql/mariadb/postgresql/redis 的安装、运行、版本与分组 `group`） |
 | POST | `/api/apps/install` | `name`（必须是应用目录白名单键）；在后台启动安装任务并立即返回。同分组应用互斥（nginx 与 apache 同属 web 分组，一台主机只能安装一个网页服务器，被占用时返回 409）；同一应用同时只允许一个安装或卸载任务（占用中返回 409） |
 | POST | `/api/apps/remove` | `name`（必须是应用目录白名单键）；在后台启动卸载任务并立即返回，APT 下为 purge（同时清除配置文件与安装失败残留），同一应用同时只允许一个安装或卸载任务（占用中返回 409） |
 | GET | `/api/databases` | 数据库管理总览：`engines`（mysql/mariadb/postgresql/redis 的安装、运行与版本）+ `databases`/`users`（按引擎的库与用户列表，系统库/账号已过滤）+ `units`（各引擎的 systemd 单元，供启停按钮）+ `errors`（单个引擎列表失败原因） |
@@ -119,23 +122,23 @@ API 默认必须登录。页面 `GET /` 未登录时跳转到 `/login`；API 返
 - firewalld：仅 `allow`、`remove-allow`，修改**默认区域的运行时规则**，重载/重启后丢弃。移除一个放行规则不是显式拒绝，故不接受 `deny`。
 - 自动检测优先 firewalld，再 UFW；若同时安装，建议显式选择实际运行的引擎。
 
-站点管理语义：
+网站管理语义：
 
-- 环境`自动识别`：探测 nginx、apache2ctl/httpd、docker 与 certbot 二进制及 systemd 运行状态；Docker 额外校验守护进程可达。
+- 环境`自动识别`：探测 nginx、apache2ctl/httpd、docker 二进制及 systemd 运行状态；Docker 额外校验守护进程可达。
 - 列表：解析 `sites-enabled`/`conf.d` 下的 server 块与 VirtualHost（监听端口、server_name、root、proxy_pass、SSL），并展示发布了宿主端口的 Docker 容器；未发布的容器不出现在面板里。
 - 创建：原生模式支持静态站点（不存在才写入，原子替换、永不覆盖，Debian 系自动建立 sites-enabled 软链）与反向代理（nginx `proxy_pass` + 转发头，Apache `ProxyPass`/`ProxyPassReverse`，需 mod_proxy）；使用默认 `/var/www/<name>` 时自动创建目录和占位首页。Docker 模式固定参数模板启动容器，镜像引用做严格白名单校验。
 - 破坏性边界：原生配置删除要求文件包含 `# managed by lightpanel` 标记且位于托管目录内；Docker 操作仅允许带 `lightpanel.site` 标签或 `lightpanel-` 名称前缀的容器。
-- HTTPS 证书：certbot 探测后可按站点申请 Let's Encrypt 证书（HTTP-01，单个具体域名），`--nginx`/`--apache` 安装器插件自动改写站点配置；证书列表面板展示 `certbot certificates` 原文。
-- 最小特权模式：原生建站/删除/重载/证书签发经 helper 的 `site` 操作（`allow_sites = true`），配置内容由 helper 用共享校验器与模板在本地重新生成，面板不传递文件内容；root 模式由面板直接执行。helper 未授权或权限不足时返回 502/403 并提示。
+- 一键 SSL：面板内置 ACME 客户端（`pkg/certs`，基于 `golang.org/x/crypto/acme`）直接与 Let's Encrypt 通信，全程无需 certbot 或其他外部工具。流程：helper 改写站点配置开放 ACME 挑战路径（`location ^~ /.well-known/acme-challenge/` / Apache `Alias`，指向 `/var/lib/lightpanel/acme-challenges/`）→ 挑战文件经 helper `challenge-set` 写入（root 写 0644，nginx/apache worker 可读）→ ACME 订单与 HTTP-01 验证 → 证书与元数据存入面板状态目录（`/var/lib/lightpanel/acme/certs/<域名>/`，安装脚本已建为面板用户所有；不可写时回退到用户状态目录）→ helper `ssl-apply` 写入 HTTPS 配置（443 服务器块 + 证书路径 + 可选强制 HTTPS 跳转，跳转 location 不覆盖挑战路径）并重载。`nginx -t`/`apachectl configtest` 失败时自动恢复上一版配置。每 6 小时扫描证书，到期前 30 天自动续期（Staging 证书除外）；证书列表面板展示有效期与剩余天数。
+- 最小特权模式：原生建站/删除/重载/一键 SSL（配置改写、挑战文件）经 helper 的 `site` 操作（`allow_sites = true`），配置内容由 helper 用共享校验器与模板在本地重新生成，面板不传递文件内容；root 模式由面板直接执行。helper 未授权或权限不足时返回 502/403 并提示。
 
 应用商店语义：
 
-- 固定目录：nginx、apache、docker、certbot、mysql、mariadb、postgresql、redis；应用名必须是目录白名单键，不接受任意软件包名。部分应用在个别包管理器下无对应软件包（如 mysql 在 zypper/apk），界面会提示“当前软件包管理器不提供此应用”。
+- 固定目录：nginx、apache、docker、mysql、mariadb、postgresql、redis；应用名必须是目录白名单键，不接受任意软件包名。部分应用在个别包管理器下无对应软件包（如 mysql 在 zypper/apk），界面会提示“当前软件包管理器不提供此应用”。
 - 同类型互斥：目录中的应用带分组（nginx 与 apache 同属 `web` 分组）。同分组应用只能安装一个——安装前实时探测，已装 nginx 时安装 apache 返回 409，界面显示“已被 Nginx 占用”且不提供安装按钮；卸载后即可安装另一个。
 - 包管理器自动探测：按 apt-get → dnf → yum → zypper → apk 顺序探测，安装参数由共享目录（`pkg/helper/apps.go`）按发行版重建（如 apache 在 Debian 系为 `apache2`、RHEL 系为 `httpd`），面板不传递原始 argv。
 - 安装遵循官方恢复手段：apt-get 安装前先执行 `dpkg --configure -a`（修复此前失败安装留下的半配置状态，如装坏的 MySQL）并刷新软件包列表，二者失败不阻断安装本身。
 - 卸载遵循官方清理手段：apt-get 先 `dpkg --configure -a` 再 `purge -y`（连同配置文件与安装失败残留一起移除），最后 `autoremove -y` 清理孤儿依赖；dnf/yum 为 `remove -y` + `autoremove -y`；zypper 为 `remove`；apk 为 `del`。收尾清理步骤失败不阻断卸载结果。
-- 后台任务：安装与卸载可能持续数分钟，`POST /api/apps/install` / `POST /api/apps/remove` 启动后台任务后立即返回，前端在任务中心查看进度与包管理器输出，完成后提示“已成功安装”并引导前往对应页面（数据库类 →「数据库管理」，网页服务器/Docker/certbot →「站点管理」）；同一应用同时仅允许一个安装或卸载任务。
+- 后台任务：安装与卸载可能持续数分钟，`POST /api/apps/install` / `POST /api/apps/remove` 启动后台任务后立即返回，前端在任务中心查看进度与包管理器输出，完成后提示“已成功安装”并引导前往对应页面（数据库类 →「数据库管理」，网页服务器/Docker →「网站管理」）；同一应用同时仅允许一个安装或卸载任务。
 - 最小特权模式：安装与卸载经 helper 的 `app` 操作（`allow_apps = true`），helper 端重新探测包管理器并重建全部参数；root 模式由面板直接执行。
 
 数据库管理语义：
@@ -250,7 +253,7 @@ TOML 是可选外部文件：不传 `-c` 时只用安全默认值和环境变量
 
 ### HTTPS 与反向代理
 
-直接 TLS：设置 `tls_cert`、`tls_key` 为 PEM 路径、`public_origin="https://panel.example.com:8888"`（默认已监听 `0.0.0.0`，无需另设 `host`）。证书续期后重启面板加载；本版不内置 ACME，证书可由现有反代/证书工具管理。
+直接 TLS：设置 `tls_cert`、`tls_key` 为 PEM 路径、`public_origin="https://panel.example.com:8888"`（默认已监听 `0.0.0.0`，无需另设 `host`）。证书续期后重启面板加载；站点证书由「网站管理」的内置 ACME 一键签发与自动续期，面板自身 TLS 的证书可复用签发结果或由现有反代/证书工具管理。
 
 反代 TLS：TLS 两项留空，`public_origin="https://panel.example.com"`。面板默认绑定 `0.0.0.0` 并放行明文 HTTP 对外（`allow_public_http` 缺省开启，可用环境变量 `LP_ALLOW_PUBLIC_HTTP` 覆盖）；确需对外明文监听的场景应自行评估——公网明文传输会暴露凭据与会话，生产环境仍应使用 TLS 或反向代理。如需收紧：将 `host` 改回 `127.0.0.1` 并设 `allow_public_http = false`，此时无本地证书时仅允许 loopback 监听。绑定 `0.0.0.0` 且未配置域名 `public_origin` 时，浏览器经由实际 IP 访问，Host/Origin 校验按请求自身的 Host 放行（跨站请求仍被 Origin/Referer 与 CSRF token 拦截）；若配置了具体域名/IP 的 `public_origin`，则维持严格 Host 校验，只能经该 origin 访问。Nginx HTTPS server 内示例：
 
@@ -309,7 +312,7 @@ allowed_users = ["lightpanel"]
 allow_firewall = true   # ufw/firewalld 端口规则（读+写）
 allow_kill = true       # 对任意进程发 SIGTERM/SIGKILL（进程身份经 pidfd 固定）
 allow_update = true     # 在线更新：helper 复核 SHA256 后安装并重启面板
-allow_sites = true      # 托管站点：配置写入（helper 端重新生成内容）、托管删除、引擎重载、certbot
+allow_sites = true      # 托管站点：配置写入（helper 端重新生成内容）、托管删除、引擎重载、一键 SSL
 allow_apps = true       # 应用商店：经系统软件包管理器安装/卸载固定目录中的应用（参数在 helper 端重建）
 allow_databases = true  # 数据库管理：列表/建库/删库/用户管理（密码仅经 stdin，参数在 helper 端重建）
 
@@ -327,7 +330,7 @@ allow_databases = true  # 数据库管理：列表/建库/删库/用户管理（
 - 服务列表、服务详情、日志读取等只读操作不经 helper。
 - 文件管理以 `lightpanel` 用户权限执行：能看/改什么取决于该用户的 OS 权限。需要 root 全盘文件管理时改用 `--legacy-root`，代价是 HTTP 进程重新获得 root。
 - 在线更新：非 root 面板把 Release 资产下载到 `staging_dir`（默认 `/var/lib/lightpanel/update`），helper 复核目录属主/权限与 SHA256 清单后再换二进制并延迟重启面板；暂存目录必须属于面板用户且不允许组/其他用户可写。
-- 托管站点（`allow_sites`）：面板不发送文件内容——创建请求只带参数（名称、引擎、类型、域名、端口、根目录/反代目标），helper 用与面板完全一致的共享校验器和模板在本地重新生成配置；删除要求目标位于托管目录且含 `# managed by lightpanel` 标记；引擎重载与 certbot 签发（`allow_sites` 整体开关，不做单元级细分）也在 helper 内完成。站点校验原语（`pkg/helper/sites.go`）两端共享，保证判定一致。
+- 托管站点（`allow_sites`）：面板不发送文件内容——创建请求只带参数（名称、引擎、类型、域名、端口、根目录/反代目标），helper 用与面板完全一致的共享校验器和模板在本地重新生成配置；删除要求目标位于托管目录且含 `# managed by lightpanel` 标记；引擎重载与一键 SSL 的配置改写/挑战文件写入（`allow_sites` 整体开关，不做单元级细分）也在 helper 内完成，ACME 网络交互由面板自身完成、不依赖外部工具。站点校验原语（`pkg/helper/sites.go`）两端共享，保证判定一致。
 - helper 每次操作写 journald 审计日志（操作、UID、对象、结果）。
 
 `--legacy-root` 保留旧模式；升级已有安装时脚本会在配置缺失 `[helper]` 段时追加通配授权（等价旧版行为），建议随后按需收紧。

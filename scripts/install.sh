@@ -410,7 +410,7 @@ TimeoutStopSec=15
 UMask=0077
 NoNewPrivileges=true
 # helper 会派生系统包管理器（应用商店 apt/dpkg 等）并写入站点与证书状态
-# （/etc/nginx、/etc/apache2、/var/www、/etc/letsencrypt、/var/lib/apt），
+# （/etc/nginx、/etc/apache2、/var/www、/var/lib/lightpanel、/var/lib/apt），
 # 子进程完整继承本单元的沙箱：ProtectSystem=strict 会让 /var/lib/apt 只读、
 # RestrictSUIDSGID 会拦截 apt 降权到 _apt 用户的 setresuid，二者均使安装
 # 必然失败，因此不启用文件系统写隔离与 setuid 系统调用过滤。特权收敛仍
@@ -528,6 +528,9 @@ if [ "$LEGACY_ROOT" -eq 0 ]; then
   chown root:"$PANEL_USER" "$INSTALL_DIR/config.toml"
   chmod 0640 "$INSTALL_DIR/config.toml"
   install -d -o "$PANEL_USER" -g "$PANEL_USER" -m 0750 /var/lib/lightpanel/update
+  # 面板可写的 ACME 状态目录：内置 Let's Encrypt 客户端在此保存账号密钥、
+  # 证书与元数据；nginx/apache 以 root 身份加载证书，无需放宽目录权限。
+  install -d -o "$PANEL_USER" -g "$PANEL_USER" -m 0750 /var/lib/lightpanel/acme
 fi
 
 # ---- systemd ----

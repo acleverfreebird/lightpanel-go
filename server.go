@@ -4,6 +4,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"embed"
 	"html/template"
 	"io/fs"
@@ -16,6 +17,7 @@ import (
 
 	"lightpanel/config"
 	"lightpanel/pkg/auth"
+	"lightpanel/pkg/certs"
 	"lightpanel/pkg/sysinfo"
 	"lightpanel/pkg/terminal"
 )
@@ -23,9 +25,14 @@ import (
 type panelHandler struct {
 	http.Handler
 	terminal *terminal.Manager
+	certs    *sysinfo.CertManager
 }
 
 func (p *panelHandler) Close() { p.terminal.Close() }
+
+// StartRenewal launches the automatic Let's Encrypt renewal loop; it dies
+// with the process context on shutdown.
+func (p *panelHandler) StartRenewal(ctx context.Context) { go p.certs.RenewLoop(ctx) }
 
 //go:embed templates/*.html static/*
 var embeddedFiles embed.FS
@@ -80,11 +87,12 @@ func newHandler(cfg *config.Config, files *sysinfo.Files, manager *sysinfo.Manag
 	register("POST /api/firewall/rule", manager.FirewallAction)
 	tasks := &sysinfo.TaskManager{}
 	sites := sysinfo.NewSiteManager(tasks)
+	sslCerts := sysinfo.NewCertManager(sites, tasks, certs.NewStore(certs.ResolveDir()))
 	register("GET /api/sites", sites.Sites)
 	register("POST /api/sites/create", sites.SiteCreate)
 	register("POST /api/sites/action", sites.SiteAction)
-	register("GET /api/sites/certs", sites.Certificates)
-	register("POST /api/sites/cert", sites.IssueCert)
+	register("GET /api/sites/certs", sslCerts.List)
+	register("POST /api/sites/ssl", sslCerts.SSL)
 	apps := sysinfo.NewAppManager(tasks)
 	register("GET /api/apps", apps.Apps)
 	register("POST /api/apps/install", apps.AppInstall)
@@ -98,7 +106,7 @@ func newHandler(cfg *config.Config, files *sysinfo.Files, manager *sysinfo.Manag
 	register("POST /api/databases/delete", databases.DBDrop)
 	register("POST /api/databases/user", databases.DBUserCreate)
 	register("POST /api/databases/user-password", databases.DBUserPassword)
-	return &panelHandler{Handler: security(cfg, files.UploadLimit(), mux), terminal: terminals}, nil
+	return &panelHandler{Handler: security(cfg, files.UploadLimit(), mux), terminal: terminals, certs: sslCerts}, nil
 }
 
 type statusWriter struct {

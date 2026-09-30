@@ -33,7 +33,7 @@ func TestAppsHandlerDetectsNothingWithoutTools(t *testing.T) {
 		t.Errorf("expected empty package manager, got: %s", body)
 	}
 	// The whole catalog stays visible so the store can render install targets.
-	for _, app := range []string{"nginx", "apache", "docker", "certbot", "mysql", "mariadb", "postgresql", "redis"} {
+	for _, app := range []string{"nginx", "apache", "docker", "mysql", "mariadb", "postgresql", "redis"} {
 		if !strings.Contains(body, `"name":"`+app+`"`) {
 			t.Errorf("catalog missing app %q, got: %s", app, body)
 		}

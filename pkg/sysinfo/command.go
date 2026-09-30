@@ -37,7 +37,7 @@ func (b *limitedBuffer) Write(p []byte) (int, error) {
 }
 func executable(name string) (string, error) {
 	switch name {
-	case "systemctl", "journalctl", "ufw", "firewall-cmd", "nginx", "docker", "apache2ctl", "httpd", "certbot",
+	case "systemctl", "journalctl", "ufw", "firewall-cmd", "nginx", "docker", "apache2ctl", "httpd",
 		"apt-get", "dnf", "yum", "zypper", "apk",
 		// database engines and clients (detection and management)
 		"mysql", "mariadb", "mysqld", "mariadbd", "postgres", "psql", "createdb", "dropdb",

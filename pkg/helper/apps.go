@@ -35,9 +35,6 @@ var AppCatalog = []AppSpec{
 	{Name: "docker", Title: "Docker", Description: "容器运行时，用于以容器方式部署站点与应用", Packages: map[string]string{
 		"apt-get": "docker.io", "dnf": "docker", "yum": "docker", "zypper": "docker", "apk": "docker",
 	}},
-	{Name: "certbot", Title: "Certbot", Description: "Let's Encrypt 客户端，为站点签发免费的 HTTPS 证书", Packages: map[string]string{
-		"apt-get": "certbot", "dnf": "certbot", "yum": "certbot", "zypper": "certbot", "apk": "certbot",
-	}},
 	{Name: "mysql", Title: "MySQL", Description: "广泛使用的关系型数据库，安装后可在「数据库管理」中建库与管用户", Packages: map[string]string{
 		"apt-get": "mysql-server", "dnf": "mysql-server", "yum": "mysql-server",
 	}},

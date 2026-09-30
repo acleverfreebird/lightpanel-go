@@ -29,21 +29,26 @@ const (
 // binary but restart separately, so an upgrade leaves the old helper image
 // running until it is restarted. Without the handshake such a helper fails
 // new operations with a bare "unknown operation".
-const ProtocolVersion = 1
+//
+// v2: certbot issuance replaced by panel-side ACME; new site actions
+// ssl-apply / challenge-set / challenge-clear.
+const ProtocolVersion = 2
 
 var serviceActions = map[string]bool{"start": true, "stop": true, "restart": true, "reload": true, "enable": true, "disable": true}
 
 // ValidServiceAction reports whether action is a helper-permitted systemd action.
 func ValidServiceAction(action string) bool { return serviceActions[action] }
 
-// Site actions for OpSite. Create renders the whole configuration file on the
-// helper side from validated parameters — the panel never ships file content.
+// Site actions for OpSite. Create and ssl-apply render the whole
+// configuration file on the helper side from validated parameters — the
+// panel never ships file content.
 var siteActions = map[string]bool{
-	"create":      true, // kind=static|proxy site; helper writes conf, docroot, symlink, reloads
-	"delete":      true, // remove a marker-bearing managed .conf (and its enabled symlink)
-	"reload":      true, // reload nginx/apache after out-of-band edits
-	"issue-cert":  true, // certbot certificate issuance for one domain
-	"cert-status": true, // read-only `certbot certificates` listing
+	"create":          true, // kind=static|proxy site; helper writes conf, docroot, symlink, reloads
+	"delete":          true, // remove a marker-bearing managed .conf (and its enabled symlink)
+	"reload":          true, // reload nginx/apache after out-of-band edits
+	"ssl-apply":       true, // rewrite a managed conf with/without HTTPS + reload (config-test guarded)
+	"challenge-set":   true, // write one ACME HTTP-01 token file into the fixed challenge dir
+	"challenge-clear": true, // remove one ACME token file (empty token clears the directory)
 }
 
 // ValidSiteAction reports whether action is a helper-permitted site operation.
@@ -93,7 +98,16 @@ type Request struct {
 	Domain      string `json:"domain,omitempty"`
 	Root        string `json:"root,omitempty"`
 	ProxyTarget string `json:"proxy_target,omitempty"`
-	Email       string `json:"email,omitempty"`
+	// OpSite ssl-apply fields. SSLOn/ForceHTTPS switch the generated
+	// configuration; CertFile/KeyFile must pass ValidPemPath and exist.
+	SSLOn      bool   `json:"ssl_on,omitempty"`
+	ForceHTTPS bool   `json:"force_https,omitempty"`
+	CertFile   string `json:"cert_file,omitempty"`
+	KeyFile    string `json:"key_file,omitempty"`
+	// OpSite ACME HTTP-01 challenge fields. Token must match the ACME token
+	// alphabet; Auth is the key authorization written as the file content.
+	Token string `json:"token,omitempty"`
+	Auth  string `json:"auth,omitempty"`
 	// OpApp fields. App must be a catalog key from apps.go; the helper
 	// re-derives the package name and every argument.
 	App string `json:"app,omitempty"`

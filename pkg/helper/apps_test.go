@@ -6,12 +6,12 @@ import (
 )
 
 func TestValidAppName(t *testing.T) {
-	for _, name := range []string{"nginx", "apache", "docker", "certbot", "mysql", "mariadb", "postgresql", "redis"} {
+	for _, name := range []string{"nginx", "apache", "docker", "mysql", "mariadb", "postgresql", "redis"} {
 		if !ValidAppName(name) {
 			t.Errorf("ValidAppName(%q) = false, want true", name)
 		}
 	}
-	for _, name := range []string{"", "nginx ", "Nginx", "nginx-extra", "nginx;rm", "certbot\n", "../../etc", "mysql8", "postgres", "mongodb"} {
+	for _, name := range []string{"", "nginx ", "Nginx", "nginx-extra", "nginx;rm", "certbot\n", "../../etc", "mysql8", "postgres", "mongodb", "certbot"} {
 		if ValidAppName(name) {
 			t.Errorf("ValidAppName(%q) = true, want false", name)
 		}
@@ -76,7 +76,6 @@ func TestAppInstallSteps(t *testing.T) {
 		{"dnf", "nginx", []Step{{Args: []string{"dnf", "install", "-y", "nginx"}}}},
 		{"zypper", "docker", []Step{{Args: []string{"zypper", "--non-interactive", "install", "docker"}}}},
 		{"apk", "mariadb", []Step{{Args: []string{"apk", "add", "mariadb"}}}},
-		{"apk", "certbot", []Step{{Args: []string{"apk", "add", "certbot"}}}},
 	}
 	for _, c := range cases {
 		got, err := AppInstallSteps(c.manager, c.app)
@@ -135,7 +134,6 @@ func TestAppRemoveSteps(t *testing.T) {
 			{Args: []string{"yum", "autoremove", "-y"}, Optional: true},
 		}},
 		{"zypper", "docker", []Step{{Args: []string{"zypper", "--non-interactive", "remove", "docker"}}}},
-		{"apk", "certbot", []Step{{Args: []string{"apk", "del", "certbot"}}}},
 	}
 	for _, c := range cases {
 		got, err := AppRemoveSteps(c.manager, c.app)
