@@ -263,6 +263,8 @@ allow_sites = true
 allow_apps = true
 # 数据库管理（列出/创建/删除数据库与用户管理）
 allow_databases = true
+# 网页终端中继 root PTY（终端页直接进入 root 登录 shell）
+allow_terminal = true
 
 # 按服务/动作细分授权：单元名 = 允许的 systemd 动作。
 # 缺省通配放开所有单元（等价旧版 root 行为）。如需收紧，把 "*" 行换成
@@ -290,6 +292,7 @@ allow_update = true
 allow_sites = true
 allow_apps = true
 allow_databases = true
+allow_terminal = true
 
 # 升级默认：通配放开全部单元（旧版 root 行为）。建议改为按需授权，例如
 # 删除 "*" 行并逐个列出单元。
@@ -408,16 +411,17 @@ Restart=on-failure
 RestartSec=3
 TimeoutStopSec=15
 UMask=0077
-NoNewPrivileges=true
 # helper 会派生系统包管理器（应用商店 apt/dpkg 等）并写入站点与证书状态
 # （/etc/nginx、/etc/apache2、/var/www、/var/lib/lightpanel、/var/lib/apt），
 # 子进程完整继承本单元的沙箱：ProtectSystem=strict 会让 /var/lib/apt 只读、
 # RestrictSUIDSGID 会拦截 apt 降权到 _apt 用户的 setresuid，二者均使安装
 # 必然失败，因此不启用文件系统写隔离与 setuid 系统调用过滤。特权收敛仍
-# 由白名单 argv（AppInstallSteps/站点模板）保证。NoNewPrivileges、
-# PrivateTmp 与内核防护项不影响包管理器，继续保留。
-ProtectHome=true
-PrivateTmp=true
+# 由白名单 argv（AppInstallSteps/站点模板）保证。
+# 网页终端的 root PTY 也由 helper 派生（allow_terminal）：ProtectHome=true
+# 会把 /root 挂成空目录使 root shell 无法进入主目录；PrivateTmp=true 会让
+# 终端里的 /tmp 与真实系统不一致；NoNewPrivileges=true 会拦截终端内
+# su/sudo/passwd 等 setuid 工具。这三项因此一并停用；内核防护项不影响
+# shell 与包管理器，继续保留。
 ProtectKernelTunables=true
 ProtectControlGroups=true
 LimitNOFILE=1024

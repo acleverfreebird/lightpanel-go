@@ -70,6 +70,11 @@ type HelperConfig struct {
 	// AllowDatabases 允许数据库管理操作：列出/创建/删除数据库与用户管理；
 	// 引擎、名称与全部参数在 helper 端重建，密码仅经 stdin 传递。
 	AllowDatabases bool `toml:"allow_databases"`
+	// AllowTerminal 允许网页终端经 helper 中继 root PTY：面板连接期间
+	// helper 持有对应的 root 登录 shell。非 root 面板要获得 root 终端必须
+	// 开启；关闭后非 root 面板的终端会话将以明确错误结束（不会静默降级为
+	// 面板账号 shell）。
+	AllowTerminal bool `toml:"allow_terminal"`
 	// StagingDir 是非 root 面板下载更新资产的目录（属主必须是面板用户，权限
 	// 不得对组/其他用户可写；helper 安装前会复核）。
 	StagingDir string `toml:"staging_dir"`
@@ -217,6 +222,7 @@ func applyDefaults(c *Config, raw map[string]any) {
 		"allow_sites":     &c.Helper.AllowSites,
 		"allow_apps":      &c.Helper.AllowApps,
 		"allow_databases": &c.Helper.AllowDatabases,
+		"allow_terminal":  &c.Helper.AllowTerminal,
 	} {
 		if _, ok := section[key]; !ok {
 			*dst = true

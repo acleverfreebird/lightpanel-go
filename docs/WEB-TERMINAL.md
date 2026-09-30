@@ -15,14 +15,18 @@
 1. 浏览器向 `GET /ws/terminal` 发起 WebSocket 升级，携带面板登录 cookie。未登录或登录过期返回 401。
 2. 握手校验同源：浏览器的 Origin 必须匹配 `public_origin`，且其 host 必须与请求 Host 一致；通配配置按 `public_origin` 的协议与实际请求 Host 校验。TLS 由反代终止时同样有效，不信任客户端转发头。跨站页面无法借 cookie 连接（cookie 本身也是 SameSite=Strict）。非浏览器客户端（curl、wscat）不带 Origin，允许直连。
 3. 退出登录立即撤销对应 WebSocket 会话（关闭原因 `session_revoked`），面板关闭时全部会话以 `server_shutdown` 结束。
-4. shell 以**面板运行用户**身份执行（systemd 部署默认 `lightpanel`，root 部署即 root）。不继承 `LP_PASS_HASH` 等面板环境变量；工作目录与 `HOME`、`TERM=xterm-256color`、`PATH` 按常规登录环境设置。
+4. 会话始终是 **root 登录 shell**（与宝塔面板一致）。面板进程以 root 运行时，PTY 在面板进程内直接派生；非 root 部署（systemd 默认）经 `lightpanel-helper` 中继：helper 以 root 派生 PTY 并在连接存续期间泵送字节，连接断开即回收整个 root 会话。中继受 `[helper] allow_terminal` 控制（缺省开启），helper 不可用或拒绝时终端以明确错误结束，不会静默降级为面板账号 shell；仅在完全没有 `[helper]` 段的旧部署中保持旧行为（面板账号本地 shell）。不继承 `LP_PASS_HASH` 等面板环境变量；`HOME=/root`、`TERM=xterm-256color`、`PATH` 按常规登录环境设置。
 
-生命周期审计（`terminal_audit`）记录连接开始/结束、拒绝原因、PID/UID 与持续时间，不含命令或输出正文。这不是恶意代码沙箱：拥有 shell 的管理员可以 `setsid` 脱离进程组，资源隔离由部署侧的 systemd 限制（`lightpanel.service` 自带）或容器承担。
+生命周期审计（`terminal_audit`）记录连接开始/结束、拒绝原因、PID/UID、模式（`local`/`helper`）与持续时间，不含命令或输出正文。这不是恶意代码沙箱：拥有 shell 的管理员可以 `setsid` 脱离进程组，资源隔离由部署侧的 systemd 限制（`lightpanel.service` 自带）或容器承担。
 
 ## 协议
 
+浏览器到面板的 WebSocket 协议不变：
+
 - 二进制帧：客户端 → 服务端为原始键盘输入字节；服务端 → 客户端为 PTY 原始输出字节（xterm.js 直接渲染）。
 - 文本帧：仅 `{"type":"resize","rows":24,"cols":80}`，调整 PTY 窗口大小；未知控制帧忽略。
+
+非 root 面板在面板与 helper 之间增加一段中继（`OpTerminal`，协议 v3）：JSON 请求/应答握手后，面板 → helper 为帧（1 字节类型 + 4 字节大端长度 + 载荷；`0x01` = 键盘输入，`0x02` = resize，载荷为 4 字节 rows/cols），helper → 面板为 PTY 原始输出字节，EOF 即会话结束。
 
 ## 反向代理
 

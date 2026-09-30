@@ -58,7 +58,7 @@ docs/SSL.md                  一键 SSL（内置 ACME）实现、存储布局与
 
 ### MVP 范围
 
-已实现：系统概览（指标趋势、主机信息、运行诊断、快捷入口）、进程搜索/分页/结束、systemd 服务管理（已加载与已安装单元、启停/重启/重载/开机自启）、全盘文件浏览/上传/下载/新建文件夹/重命名/在线编辑/递归删除/权限、版本检查与一键更新、单管理员登录和可选只读权限、系统/服务日志、防火墙端口规则、网站管理（宝塔式布局：站点表格 + 设置弹窗；自动识别 Nginx/Apache/Docker，浏览已配置站点，创建静态站点、反向代理或 Docker 容器部署，受控删除与重载；内置 ACME 客户端一键申请 Let's Encrypt 证书——不需要 certbot 等任何外部工具，支持强制 HTTPS、到期前 30 天自动续期与 Staging 测试证书）、应用商店（通过系统软件包管理器一键安装/卸载 Nginx/Apache/Docker/MySQL/MariaDB/PostgreSQL/Redis，安装与卸载均为后台任务并可查看进度与输出）、数据库管理（自动识别 MySQL/MariaDB/PostgreSQL/Redis，查看库与用户，建库/删库、创建用户与修改密码，引擎启停）。终端（Web Terminal）为宝塔风格的网页终端：侧栏打开即连，整页控制台（内置 xterm.js + 真 PTY，支持 vim/top、窗口自适应与 5000 行回滚），复用面板登录会话，跨源握手拒绝、退出登录即时撤销并保留生命周期审计；详见 [终端](docs/WEB-TERMINAL.md)。
+已实现：系统概览（指标趋势、主机信息、运行诊断、快捷入口）、进程搜索/分页/结束、systemd 服务管理（已加载与已安装单元、启停/重启/重载/开机自启）、全盘文件浏览/上传/下载/新建文件夹/重命名/在线编辑/递归删除/权限、版本检查与一键更新、单管理员登录和可选只读权限、系统/服务日志、防火墙端口规则、网站管理（宝塔式布局：站点表格 + 设置弹窗；自动识别 Nginx/Apache/Docker，浏览已配置站点，创建静态站点、反向代理或 Docker 容器部署，受控删除与重载；内置 ACME 客户端一键申请 Let's Encrypt 证书——不需要 certbot 等任何外部工具，支持强制 HTTPS、到期前 30 天自动续期与 Staging 测试证书）、应用商店（通过系统软件包管理器一键安装/卸载 Nginx/Apache/Docker/MySQL/MariaDB/PostgreSQL/Redis，安装与卸载均为后台任务并可查看进度与输出）、数据库管理（自动识别 MySQL/MariaDB/PostgreSQL/Redis，查看库与用户，建库/删库、创建用户与修改密码，引擎启停）。终端（Web Terminal）为宝塔风格的网页终端：侧栏打开即连，整页控制台（内置 xterm.js + 真 PTY，支持 vim/top、窗口自适应与 5000 行回滚），进入即 **root 登录 shell**（root 面板本地派生，非 root 面板经 helper 中继），复用面板登录会话，跨源握手拒绝、退出登录即时撤销并保留生命周期审计；详见 [终端](docs/WEB-TERMINAL.md)。
 
 安全边界：这是有权限的主机管理工具，不是多租户容器。文件管理面向**整个文件系统**：所有接口只接受绝对路径，`..` 组件、反斜杠与 NUL 一律拒绝；`/proc`、`/sys`、`/dev`、`/run` 这四个虚拟系统目录拒绝删除与移动。下载/编辑读取只接受普通文件（符号链接若最终指向普通文件也可下载）；chmod 只接受普通文件与目录，且拒绝 setuid/setgid 与符号链接；只允许普通文件上传，禁止覆盖；目录删除默认要求为空，带 `recursive=true` 时递归删除且不允许删除根；在线编辑只处理 ≤1 MiB 且不含 NUL 的普通文件，保存先写临时文件再原子替换，且拒绝以符号链接为目标的写入。进程以 root 运行时这些接口等同 root 文件权限；默认的最小特权模式下面板以专用非特权用户 `lightpanel` 运行（见「最小特权 helper」），文件接口仅等同该用户权限。无论哪种模式，请务必启用 TLS/反代并保管好管理员密码。
 
@@ -315,6 +315,7 @@ allow_update = true     # 在线更新：helper 复核 SHA256 后安装并重启
 allow_sites = true      # 托管站点：配置写入（helper 端重新生成内容）、托管删除、引擎重载、一键 SSL
 allow_apps = true       # 应用商店：经系统软件包管理器安装/卸载固定目录中的应用（参数在 helper 端重建）
 allow_databases = true  # 数据库管理：列表/建库/删库/用户管理（密码仅经 stdin，参数在 helper 端重建）
+allow_terminal = true   # 网页终端：中继 root PTY，终端页直接进入 root 登录 shell
 
 # 按服务/动作细分授权：单元名 = 允许的 systemd 动作（start/stop/restart）。
 # 缺省通配放开所有单元；如需收紧，把 "*" 行换成逐个单元，空表 = 全部拒绝。
@@ -327,6 +328,7 @@ allow_databases = true  # 数据库管理：列表/建库/删库/用户管理（
 行为细节：
 
 - 面板以 root 运行时（旧模式）完全忽略 `[helper]`，行为与旧版本一致；非 root 且未配置 `[helper]` 时，服务控制/防火墙/进程信号/在线更新返回明确错误，其余只读功能正常。
+- 网页终端（`allow_terminal`）：终端页始终进入 root 登录 shell——非 root 面板把 PTY 中继给 helper 派生，会话随面板连接断开或登录撤销即时回收；helper 未授权（`allow_terminal = false`）、未运行或协议过旧时终端以明确错误结束，不静默降级。详见 [终端](docs/WEB-TERMINAL.md)。
 - 服务列表、服务详情、日志读取等只读操作不经 helper。
 - 文件管理以 `lightpanel` 用户权限执行：能看/改什么取决于该用户的 OS 权限。需要 root 全盘文件管理时改用 `--legacy-root`，代价是 HTTP 进程重新获得 root。
 - 在线更新：非 root 面板把 Release 资产下载到 `staging_dir`（默认 `/var/lib/lightpanel/update`），helper 复核目录属主/权限与 SHA256 清单后再换二进制并延迟重启面板；暂存目录必须属于面板用户且不允许组/其他用户可写。

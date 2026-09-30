@@ -1,8 +1,9 @@
 //go:build linux
 
 // Package terminal 提供面板的网页终端：与宝塔面板一致，进入终端页即得到
-// 一个由 xterm.js 渲染的真实 PTY 会话。shell 以面板服务账号运行，访问仅由
-// 面板登录会话保护——没有独立票据、连接额度、会话时长或输入输出上限。
+// 一个由 xterm.js 渲染的真实 PTY 会话。会话始终是 root 登录 shell——root
+// 面板直接在本地派生，非 root 面板经 lightpanel-helper 中继；访问仅由面板
+// 登录会话保护——没有独立票据、连接额度、会话时长或输入输出上限。
 package terminal
 
 import (

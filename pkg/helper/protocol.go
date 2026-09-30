@@ -6,7 +6,9 @@
 package helper
 
 import (
+	"encoding/binary"
 	"errors"
+	"io"
 	"strconv"
 )
 
@@ -20,6 +22,7 @@ const (
 	OpSite           = "site"            // managed web-site configuration, gated by allow_sites
 	OpApp            = "app"             // install or remove a catalog app via the system package manager, gated by allow_apps
 	OpDatabase       = "database"        // managed database operations, gated by allow_databases
+	OpTerminal       = "terminal"        // relay one root web-terminal PTY, gated by allow_terminal
 	OpHello          = "hello"           // protocol handshake; no ACL, returns ProtocolVersion
 )
 
@@ -32,7 +35,63 @@ const (
 //
 // v2: certbot issuance replaced by panel-side ACME; new site actions
 // ssl-apply / challenge-set / challenge-clear.
-const ProtocolVersion = 2
+// v3: new terminal operation relaying the web terminal's root PTY.
+const ProtocolVersion = 3
+
+// Relay framing for OpTerminal. After the helper answers the terminal request
+// with an OK Response, the connection stops speaking JSON: the panel sends
+// framed messages (one frame per client keystroke batch or resize) while the
+// helper answers with raw PTY output bytes until the shell exits and the
+// connection closes (EOF on the panel side). Every frame is 1 type byte, a
+// uint32-BE payload length and the payload.
+const (
+	// FrameInput carries raw keystrokes.
+	FrameInput = 0x01
+	// FrameResize resizes the PTY; its payload is rows and cols as two
+	// uint16-BE integers.
+	FrameResize = 0x02
+)
+
+// WriteInputFrame sends one keystroke batch to the relay.
+func WriteInputFrame(w io.Writer, data []byte) error {
+	return writeFrame(w, FrameInput, data)
+}
+
+// WriteResizeFrame sends one PTY resize to the relay.
+func WriteResizeFrame(w io.Writer, rows, cols uint16) error {
+	return writeFrame(w, FrameResize, []byte{byte(rows >> 8), byte(rows), byte(cols >> 8), byte(cols)})
+}
+
+func writeFrame(w io.Writer, kind byte, payload []byte) error {
+	head := [5]byte{kind, byte(len(payload) >> 24), byte(len(payload) >> 16), byte(len(payload) >> 8), byte(len(payload))}
+	if _, err := w.Write(head[:]); err != nil {
+		return err
+	}
+	_, err := w.Write(payload)
+	return err
+}
+
+// ReadRelayFrame reads one framed message from the relay stream. The frame
+// type and payload are returned; io.EOF at a frame boundary means the relay
+// (or the shell behind it) is gone.
+func ReadRelayFrame(r io.Reader) (kind byte, payload []byte, err error) {
+	var head [5]byte
+	if _, err = io.ReadFull(r, head[:]); err != nil {
+		return 0, nil, err
+	}
+	kind = head[0]
+	n := binary.BigEndian.Uint32(head[1:])
+	if n > 1<<20 {
+		return 0, nil, errors.New("terminal frame too large")
+	}
+	payload = make([]byte, n)
+	if n > 0 {
+		if _, err = io.ReadFull(r, payload); err != nil {
+			return 0, nil, err
+		}
+	}
+	return kind, payload, nil
+}
 
 var serviceActions = map[string]bool{"start": true, "stop": true, "restart": true, "reload": true, "enable": true, "disable": true}
 

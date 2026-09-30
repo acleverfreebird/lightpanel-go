@@ -45,6 +45,10 @@ type ServerConfig struct {
 	// database, user management). Engines, names and every argument are
 	// rebuilt helper-side from databases.go, so this is a single opt-in grant.
 	AllowDatabases bool
+	// AllowTerminal gates the web terminal's root PTY relay: a granted
+	// connection gets an interactive root login shell for as long as the
+	// panel keeps the session alive.
+	AllowTerminal bool
 	// PanelUnit is the systemd unit restarted after a successful self-update.
 	PanelUnit string
 }
@@ -189,8 +193,11 @@ func Run(ctx context.Context, cfg ServerConfig, log *slog.Logger) error {
 		_ = l.Close()
 	}()
 	log.Info("helper_listening", "socket", cfg.Socket, "protocol", ProtocolVersion, "allowed_users", cfg.AllowedUsers,
-		"services", len(cfg.Services), "firewall", cfg.AllowFirewall, "kill", cfg.AllowKill, "update", cfg.AllowUpdate, "sites", cfg.AllowSites, "apps", cfg.AllowApps, "databases", cfg.AllowDatabases)
-	slots := make(chan struct{}, 16)
+		"services", len(cfg.Services), "firewall", cfg.AllowFirewall, "kill", cfg.AllowKill, "update", cfg.AllowUpdate, "sites", cfg.AllowSites, "apps", cfg.AllowApps, "databases", cfg.AllowDatabases, "terminal", cfg.AllowTerminal)
+	// Slots bound concurrent connections. A relayed terminal holds its slot
+	// for the whole session, so the budget leaves room for a full set of
+	// terminals plus short operations.
+	slots := make(chan struct{}, 32)
 	for {
 		conn, err := l.Accept()
 		if err != nil {
@@ -239,6 +246,12 @@ func (s *server) handle(conn net.Conn) {
 	}
 	if req.Op == OpApp {
 		_ = conn.SetDeadline(time.Now().Add(appInstallDeadline))
+	}
+	// The terminal relay answers and then streams for the session's lifetime;
+	// it manages its own deadlines and logging.
+	if req.Op == OpTerminal {
+		s.terminalRelay(uid, conn)
+		return
 	}
 	resp := s.dispatch(uid, &req)
 	resp.Version = ProtocolVersion

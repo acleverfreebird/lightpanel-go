@@ -49,6 +49,10 @@ allow_apps = true
 # 数据库管理：列出/创建/删除数据库与用户管理；引擎、名称与全部参数在
 # helper 端重建，密码仅经 stdin 传递。
 allow_databases = true
+# 网页终端经 helper 中继 root PTY：终端页直接进入 root 登录 shell（与宝塔
+# 面板一致），非 root 面板必须开启；关闭后非 root 面板的终端以明确错误
+# 结束，不会静默降级为面板账号 shell。
+allow_terminal = true
 # socket = "/run/lightpanel/helper.sock"
 # staging_dir = "/var/lib/lightpanel/update"
 

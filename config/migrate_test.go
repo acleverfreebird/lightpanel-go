@@ -49,7 +49,7 @@ func TestEnsureCurrentFillsMissingKeys(t *testing.T) {
 		}
 	}
 	// 特权授权开关随"部署即全功能"缺省策略显式补全为 true。
-	for _, key := range []string{"allow_apps", "allow_databases", "allow_firewall"} {
+	for _, key := range []string{"allow_apps", "allow_databases", "allow_firewall", "allow_terminal"} {
 		line := findLine(text, key+" = ")
 		if line == "" {
 			t.Errorf("%s not filled in:\n%s", key, text)

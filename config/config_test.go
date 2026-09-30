@@ -139,6 +139,7 @@ func TestExampleConfigEnablesAllDefaults(t *testing.T) {
 		"allow_firewall": c.Helper.AllowFirewall, "allow_kill": c.Helper.AllowKill,
 		"allow_update": c.Helper.AllowUpdate, "allow_sites": c.Helper.AllowSites,
 		"allow_apps": c.Helper.AllowApps, "allow_databases": c.Helper.AllowDatabases,
+		"allow_terminal": c.Helper.AllowTerminal,
 	} {
 		if !on {
 			t.Errorf("%s not enabled by template", name)
@@ -186,7 +187,7 @@ allow_update = true
 		t.Errorf("explicit flags lost: %+v", c.Helper)
 	}
 	// 未显式写入的 allow_* 开关缺省全开（部署即全功能）。
-	if !c.Helper.AllowKill || !c.Helper.AllowSites || !c.Helper.AllowApps || !c.Helper.AllowDatabases {
+	if !c.Helper.AllowKill || !c.Helper.AllowSites || !c.Helper.AllowApps || !c.Helper.AllowDatabases || !c.Helper.AllowTerminal {
 		t.Errorf("absent flags not default-enabled: %+v", c.Helper)
 	}
 	if len(c.Helper.Services["nginx.service"]) != 3 {
