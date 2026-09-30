@@ -89,6 +89,33 @@ func concreteUnits(units []string) []string {
 	return out
 }
 
+// classifyMysqlBanner decides, from a `mysqld`/`mariadbd --version` banner,
+// which engine the server belongs to. Both MySQL-family engines list `mysqld`
+// as a candidate — Debian ships MariaDB's server under that alternative name
+// and lightpanel's unprivileged-container fixup diverts it behind a wrapper —
+// so the binary name alone would credit one server to both engines. The
+// banner decides: MariaDB prints "… Ver <n>-MariaDB …" (the name also appears
+// lowercased in its build tag), MySQL's banner never mentions it. ok is false
+// when the output carries no version banner; diagnostics mysqld writes to
+// stderr ahead of it (config files it cannot read) must not be taken for one.
+func classifyMysqlBanner(out string) (engine string, version string, ok bool) {
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		i := strings.Index(line, "Ver ")
+		if i < 0 {
+			continue
+		}
+		if rest := line[i+len("Ver "):]; rest == "" || rest[0] < '0' || rest[0] > '9' {
+			continue
+		}
+		if strings.Contains(strings.ToLower(line), "mariadb") {
+			return helper.DBMariadb, line, true
+		}
+		return helper.DBMysql, line, true
+	}
+	return "", "", false
+}
+
 // detectDatabaseEngines probes each engine's server binary for version, then
 // systemd for the running state. Shared with the app store's catalog state.
 func detectDatabaseEngines(ctx context.Context, run Runner) []EngineInfo {
@@ -96,12 +123,22 @@ func detectDatabaseEngines(ctx context.Context, run Runner) []EngineInfo {
 	for _, engine := range dbEngineOrder {
 		info := EngineInfo{Engine: engine, Installed: false, Detail: ErrUnavailable.Error()}
 		for _, bin := range helper.DBServerBinaries[engine] {
-			if out, err := run(ctx, bin, "--version"); err == nil {
-				info.Installed = true
-				info.Version = firstLine(out)
-				info.Detail = ""
-				break
+			out, err := run(ctx, bin, "--version")
+			if err != nil {
+				continue
 			}
+			version := firstLine(out)
+			if engine == helper.DBMysql || engine == helper.DBMariadb {
+				family, banner, ok := classifyMysqlBanner(out)
+				if !ok || family != engine {
+					continue
+				}
+				version = banner
+			}
+			info.Installed = true
+			info.Version = version
+			info.Detail = ""
+			break
 		}
 		if info.Installed {
 			info.Running = dbEngineActive(ctx, run, concreteUnits(helper.DBEngineUnits[engine]))

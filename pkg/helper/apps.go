@@ -169,6 +169,11 @@ cat > /usr/sbin/mysqld <<'LIGHTPANEL_WRAPPER'
 chmod 0755 /usr/sbin/mysqld
 mkdir -p /etc/mysql/mysql.conf.d
 printf '[mysqld]\nuser = root\n' > /etc/mysql/mysql.conf.d/zz-lightpanel.cnf
+# The helper unit runs with UMask=0077, so without an explicit mode the file
+# lands 0600 root:root — unreadable for the panel's non-root "mysqld --version"
+# probe (mysqld then prints "File ... not found (OS errno 13)" ahead of its
+# banner) and for any mysqld not running as root.
+chmod 0644 /etc/mysql/mysql.conf.d/zz-lightpanel.cnf
 [ ! -x /usr/sbin/mysqld.distrib ] || /usr/sbin/mysqld --version >/dev/null 2>&1 || exit 1
 `
 

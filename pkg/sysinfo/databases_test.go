@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"lightpanel/pkg/helper"
 )
 
 func dbTestManager(run Runner, runStdin func(context.Context, time.Duration, string, string, ...string) (string, error)) *DatabaseManager {
@@ -93,6 +95,51 @@ func TestDatabasesHandlerListsAndFilters(t *testing.T) {
 	}
 	if !strings.Contains(body, `app_user`) || strings.Contains(body, `mysql.sys`) {
 		t.Errorf("user listing not filtered correctly: %s", body)
+	}
+}
+
+func TestDatabaseDetectionSplitsMysqlAndMariadb(t *testing.T) {
+	// Both MySQL-family engines fall back to the shared `mysqld` name, so a
+	// single server must light up exactly one of them — decided by the
+	// version banner, not by which binary happened to answer. The wrapper
+	// case also asserts diagnostics ahead of the banner are never reported
+	// as the version.
+	cases := []struct {
+		name   string
+		banner string
+		engine string
+	}{
+		{"mysql", "mysqld  Ver 8.0.42 for Linux on x86_64 ((Ubuntu))", helper.DBMysql},
+		{"mysql behind a noisy wrapper",
+			"mysqld.distrib: File '/etc/mysql/mysql.conf.d/zz-lightpanel.cnf' not found (OS errno 13 - Permission denied)\n" +
+				"mysqld  Ver 8.0.42 for Linux on x86_64 ((Ubuntu))", helper.DBMysql},
+		{"mariadb under the mysqld name",
+			"/usr/sbin/mysqld  Ver 10.11.6-MariaDB-0ubuntu0.24.04.1 for debian-linux-gnu on x86_64 (mariadb-1:10.11.6+maria~ubu2404)",
+			helper.DBMariadb},
+		{"mariadb native binary",
+			"/usr/sbin/mariadbd  Ver 11.4.3-MariaDB for debian-linux-gnu on x86_64", helper.DBMariadb},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m := dbTestManager(func(ctx context.Context, name string, args ...string) (string, error) {
+				if len(args) == 1 && args[0] == "--version" && (name == "mysqld" || name == "mariadbd") {
+					return c.banner, nil
+				}
+				return "", ErrUnavailable
+			}, nil)
+			byEngine := map[string]EngineInfo{}
+			for _, e := range m.detectDatabases(context.Background()) {
+				byEngine[e.Engine] = e
+			}
+			for _, engine := range []string{helper.DBMysql, helper.DBMariadb} {
+				if got := byEngine[engine].Installed; got != (engine == c.engine) {
+					t.Errorf("engine %s installed = %v, want %v (banner %q)", engine, got, engine == c.engine, c.banner)
+				}
+			}
+			if v := byEngine[c.engine].Version; !strings.Contains(v, "Ver ") {
+				t.Errorf("reported version %q must be the banner line, not a diagnostic", v)
+			}
+		})
 	}
 }
 
