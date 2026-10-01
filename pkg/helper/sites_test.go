@@ -140,7 +140,9 @@ func takeOverLayout(t *testing.T, seed func(enabled, available string)) map[stri
 		}
 	}
 	previousSites, previousDir, previousMain := distroDefaultSites, nginxSitesEnabledDir, nginxMainConf
-	t.Cleanup(func() { distroDefaultSites, nginxSitesEnabledDir, nginxMainConf = previousSites, previousDir, previousMain })
+	t.Cleanup(func() {
+		distroDefaultSites, nginxSitesEnabledDir, nginxMainConf = previousSites, previousDir, previousMain
+	})
 	distroDefaultSites = map[string]distroDefaultSite{
 		"nginx":  {Enabled: filepath.Join(enabled, "default"), Available: filepath.Join(available, "default")},
 		"apache": {Enabled: filepath.Join(enabled, "000-default.conf"), Available: filepath.Join(available, "000-default.conf")},
@@ -252,7 +254,7 @@ func TestRenderSiteAdvanced(t *testing.T) {
 	// 多域名：nginx 合并 server_name；Apache ServerName + ServerAlias
 	nginx, err := RenderSite(SiteSpec{Name: "multi", Engine: "nginx", Kind: "static",
 		Domains: []string{"a.example.com", "b.example.com", "*.c.example.com"},
-		Port: 80, Root: "/var/www/multi"})
+		Port:    80, Root: "/var/www/multi"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,7 +263,7 @@ func TestRenderSiteAdvanced(t *testing.T) {
 	}
 	apache, err := RenderSite(SiteSpec{Name: "multi", Engine: "apache", Kind: "static",
 		Domains: []string{"a.example.com", "b.example.com"},
-		Port: 80, Root: "/var/www/multi"})
+		Port:    80, Root: "/var/www/multi"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -360,7 +362,11 @@ func TestSiteSpecValidation(t *testing.T) {
 		{"bad redirect code", func(s *SiteSpec) { s.Redirect = &Redirect{Target: "https://t.com", Code: 300} }},
 		{"bad redirect target", func(s *SiteSpec) { s.Redirect = &Redirect{Target: "ftp://t.com", Code: 301} }},
 		{"unknown rewrite", func(s *SiteSpec) { s.Rewrite = "wordpress" }},
-		{"rewrite on proxy", func(s *SiteSpec) { s.Kind = "proxy"; s.Proxy = ProxyConf{Nodes: []ProxyNode{{Target: "http://a:1"}}}; s.Rewrite = "spa" }},
+		{"rewrite on proxy", func(s *SiteSpec) {
+			s.Kind = "proxy"
+			s.Proxy = ProxyConf{Nodes: []ProxyNode{{Target: "http://a:1"}}}
+			s.Rewrite = "spa"
+		}},
 		{"custom rewrite on apache", func(s *SiteSpec) { s.Engine = "apache"; s.Rewrite = "custom"; s.RewriteBody = "x" }},
 		{"oversized rewrite body", func(s *SiteSpec) { s.Rewrite = "custom"; s.RewriteBody = strings.Repeat("x", maxRewriteBytes+1) }},
 	}

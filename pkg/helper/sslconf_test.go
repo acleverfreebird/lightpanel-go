@@ -40,11 +40,11 @@ func TestSiteConfExNginxSSL(t *testing.T) {
 func TestSiteConfExNginxSSLNoForce(t *testing.T) {
 	conf, err := SiteConfEx("nginx", "proxy", "app", "app.example.com", 80, "",
 		ProxyConf{Nodes: []ProxyNode{{Target: "http://127.0.0.1:3000"}}}, SSLConf{
-		Enabled:   true,
-		Challenge: true,
-		CertFile:  "/var/lib/lightpanel/acme/certs/app.example.com/fullchain.pem",
-		KeyFile:   "/var/lib/lightpanel/acme/certs/app.example.com/privkey.pem",
-	})
+			Enabled:   true,
+			Challenge: true,
+			CertFile:  "/var/lib/lightpanel/acme/certs/app.example.com/fullchain.pem",
+			KeyFile:   "/var/lib/lightpanel/acme/certs/app.example.com/privkey.pem",
+		})
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}

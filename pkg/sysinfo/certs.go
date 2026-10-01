@@ -72,7 +72,7 @@ func (m *CertManager) TaskCenter() *TaskManager {
 // file. Only these sites support one-click SSL and reverse-proxy editing:
 // the configuration template is fully owned by the panel.
 type managedSite struct {
-	ID string
+	ID     string
 	Engine string
 	Kind   string
 	Domain string
@@ -274,7 +274,7 @@ func (m *CertManager) applySSL(ctx context.Context, site *managedSite, ssl helpe
 		Domains: siteDomains(site), Index: site.Index,
 		RedirectTarget: site.RedirectTarget, RedirectCode: site.RedirectCode,
 		RedirectKeepPath: site.RedirectKeepPath,
-		Rewrite: site.Rewrite, RewriteBody: site.RewriteBody,
+		Rewrite:          site.Rewrite, RewriteBody: site.RewriteBody,
 		SSLOn: ssl.Enabled, ForceHTTPS: ssl.ForceHTTPS,
 		CertFile: ssl.CertFile, KeyFile: ssl.KeyFile,
 	}
@@ -400,7 +400,7 @@ func (m *CertManager) SiteProxy(w http.ResponseWriter, r *http.Request) {
 		Domain: site.Domain, Port: strconv.Itoa(site.Port),
 		ProxyNodes: nodes, WebSocket: websocket,
 		Domains: siteDomains(site),
-		SSLOn: ssl.Enabled, ForceHTTPS: ssl.ForceHTTPS,
+		SSLOn:   ssl.Enabled, ForceHTTPS: ssl.ForceHTTPS,
 		CertFile: ssl.CertFile, KeyFile: ssl.KeyFile,
 	}
 	if out, routed, err := privileged(r.Context(), req); routed {

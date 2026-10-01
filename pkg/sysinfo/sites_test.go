@@ -609,7 +609,7 @@ func TestParseNginxAdvancedSettings(t *testing.T) {
 	}
 	write("multi.conf", helper.SiteSpec{Name: "multi", Engine: "nginx", Kind: "static",
 		Domains: []string{"a.example.com", "b.example.com", "*.c.example.com"},
-		Port: 80, Root: "/var/www/multi", Index: []string{"home.html", "index.htm"}})
+		Port:    80, Root: "/var/www/multi", Index: []string{"home.html", "index.htm"}})
 	write("spa.conf", helper.SiteSpec{Name: "spa", Engine: "nginx", Kind: "static",
 		Domains: []string{"spa.example.com"}, Port: 80, Root: "/var/www/spa", Rewrite: "spa"})
 	write("redir.conf", helper.SiteSpec{Name: "redir", Engine: "nginx", Kind: "static",
@@ -659,7 +659,7 @@ func TestParseApacheAdvancedSettings(t *testing.T) {
 	}
 	write("blog.conf", helper.SiteSpec{Name: "blog", Engine: "apache", Kind: "static",
 		Domains: []string{"a.example.com", "b.example.com"}, Port: 80, Root: "/var/www/blog",
-		Index: []string{"home.html"},
+		Index:    []string{"home.html"},
 		Redirect: &helper.Redirect{Target: "https://new.example.com", Code: 302}})
 	// 强制 HTTPS 的 RedirectMatch 跳到自己域名，不能被误读为站点重定向
 	write("force.conf", helper.SiteSpec{Name: "force", Engine: "apache", Kind: "static",

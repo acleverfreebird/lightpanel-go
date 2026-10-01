@@ -673,11 +673,11 @@ func (m *SiteManager) confDirSites(ctx context.Context, dirs []string, engine st
 						ID: path, Engine: engine, Kind: kind,
 						ServerNames: names, Ports: block.ports, Root: block.root,
 						ProxyPass: block.proxyPass, ProxyNodes: nodes, WebSocket: block.proxyWS,
-						Index: block.index,
+						Index:          block.index,
 						RedirectTarget: block.redirectTarget, RedirectCode: block.redirectCode,
 						RedirectKeepPath: block.redirectKeepPath,
-						Rewrite: preset, RewriteBody: customBody,
-						SSL: block.ssl,
+						Rewrite:          preset, RewriteBody: customBody,
+						SSL:     block.ssl,
 						State:   map[bool]string{true: "active", false: "inactive"}[engineActive],
 						Managed: managed, Detail: name,
 					})
@@ -703,12 +703,12 @@ func (m *SiteManager) confDirSites(ctx context.Context, dirs []string, engine st
 						ID: path, Engine: engine, Kind: kind,
 						ServerNames: names, Ports: vhostPorts(vh.addr), Root: vh.documentRoot,
 						ProxyPass: vh.proxyPass, ProxyNodes: nodes,
-						Index: vh.directoryIndex,
+						Index:          vh.directoryIndex,
 						RedirectTarget: vh.redirectTarget, RedirectCode: vh.redirectCode,
 						RedirectKeepPath: vh.redirectKeepPath,
-						SSL: vh.ssl,
-						State:   map[bool]string{true: "active", false: "inactive"}[engineActive],
-						Managed: managed, Detail: name,
+						SSL:              vh.ssl,
+						State:            map[bool]string{true: "active", false: "inactive"}[engineActive],
+						Managed:          managed, Detail: name,
 					})
 				}
 			}
