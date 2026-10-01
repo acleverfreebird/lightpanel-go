@@ -66,13 +66,26 @@ func TestPTYResizeAndJobCleanup(t *testing.T) {
 	}
 	ws.Close()
 	waitClosed(t, finished)
-	b, err := os.ReadFile("/proc/" + pid + "/stat")
-	if err == nil {
+	// SIGKILL is asynchronous: on a loaded runner the job can still be
+	// runnable with the kill pending when the session handler returns, so
+	// wait for the zombie (unreaped) or reaped-and-gone state instead of
+	// snapshotting /proc once. A job still alive after the deadline is a
+	// real leak.
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		b, err := os.ReadFile("/proc/" + pid + "/stat")
+		if err != nil {
+			return // reaped by init, nothing left to assert
+		}
 		end := strings.LastIndexByte(string(b), ')')
 		fields := strings.Fields(string(b[end+1:]))
-		if len(fields) == 0 || fields[0] != "Z" {
+		if len(fields) == 0 || fields[0] == "Z" {
+			return
+		}
+		if time.Now().After(deadline) {
 			t.Fatalf("terminal job still running: %s", b)
 		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 

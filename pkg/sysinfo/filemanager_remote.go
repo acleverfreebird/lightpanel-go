@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"path"
 	"strconv"
+	"time"
 
 	"lightpanel/pkg/helper"
 )
@@ -48,6 +49,14 @@ func fileGatewayError(w http.ResponseWriter, err error, resp *helper.Response) {
 	http.Error(w, "file operation failed: "+err.Error(), fileGatewayStatus(resp))
 }
 
+// relayWriteError marks a failure writing to the helper mid-transfer: the
+// helper hung up (typically right after aborting an over-limit transfer)
+// rather than the request body failing.
+type relayWriteError struct{ err error }
+
+func (e *relayWriteError) Error() string { return e.err.Error() }
+func (e *relayWriteError) Unwrap() error { return e.err }
+
 // relaySendBody streams body to the helper as framed chunks followed by the
 // commit marker. On error the caller drops the connection, which aborts the
 // helper-side transfer.
@@ -57,7 +66,7 @@ func relaySendBody(conn net.Conn, body io.Reader) error {
 		n, err := body.Read(buf)
 		if n > 0 {
 			if werr := helper.WriteInputFrame(conn, buf[:n]); werr != nil {
-				return werr
+				return &relayWriteError{werr}
 			}
 		}
 		if err == io.EOF {
@@ -67,7 +76,10 @@ func relaySendBody(conn net.Conn, body io.Reader) error {
 			return err
 		}
 	}
-	return helper.WriteCommitFrame(conn)
+	if err := helper.WriteCommitFrame(conn); err != nil {
+		return &relayWriteError{err}
+	}
+	return nil
 }
 
 // relayVerdict reads the helper's final JSON verdict after a body transfer.
@@ -188,6 +200,21 @@ func (f *Files) relayBodyRemote(w http.ResponseWriter, r *http.Request, action, 
 		if status, msg, tooLarge := relayTooLarge(err, tooLargeFormat); tooLarge {
 			http.Error(w, msg, status)
 			return
+		}
+		var hangup *relayWriteError
+		if errors.As(err, &hangup) {
+			// The helper aborts an over-limit transfer by sending its
+			// verdict and closing the relay, so later panel writes hit the
+			// hangup. The verdict is already buffered on this end; read it
+			// (bounded, in case a future helper hangs up silently) instead
+			// of collapsing the abort into a 502.
+			_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+			final, verr := relayVerdict(conn)
+			_ = conn.SetReadDeadline(time.Time{})
+			if verr == nil {
+				fileGatewayError(w, errors.New(final.Error), final)
+				return
+			}
 		}
 		http.Error(w, "file operation failed: "+err.Error(), 502)
 		return

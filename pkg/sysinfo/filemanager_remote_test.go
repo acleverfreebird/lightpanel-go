@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"lightpanel/pkg/helper"
 )
@@ -221,6 +222,43 @@ func TestRemoteUploadTooLargeIs413(t *testing.T) {
 	f, dir := startRemoteFiles(t, func(cfg *helper.ServerConfig) { cfg.UploadLimit = 1024 })
 	w := httptest.NewRecorder()
 	f.Upload(w, httptest.NewRequest("POST", "/upload?path="+dir+"/big.bin", strings.NewReader(strings.Repeat("a", 2048))))
+	if w.Code != 413 {
+		t.Fatalf("oversized upload %d", w.Code)
+	}
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".lp-") {
+			t.Fatalf("temporary file left behind: %s", e.Name())
+		}
+	}
+}
+
+// stalledBody hands out the whole payload, then stalls on the EOF read so
+// the helper's abort and hangup land before the panel writes its commit
+// frame — the interleaving that turned the helper's 413 verdict into a
+// broken-pipe 502 on loaded runners.
+type stalledBody struct {
+	r     io.Reader
+	stall time.Duration
+}
+
+func (b stalledBody) Read(p []byte) (int, error) {
+	n, err := b.r.Read(p)
+	if err == io.EOF {
+		time.Sleep(b.stall)
+	}
+	return n, err
+}
+
+func TestRemoteUploadVerdictSurvivesHangup(t *testing.T) {
+	// The helper aborts an over-cap transfer by sending its verdict and
+	// closing the relay; the panel's in-flight commit write then hits the
+	// hangup. The status must come from the verdict the helper already
+	// queued, not collapse into a 502.
+	f, dir := startRemoteFiles(t, func(cfg *helper.ServerConfig) { cfg.UploadLimit = 1024 })
+	w := httptest.NewRecorder()
+	body := stalledBody{r: strings.NewReader(strings.Repeat("a", 2048)), stall: 150 * time.Millisecond}
+	f.Upload(w, httptest.NewRequest("POST", "/upload?path="+dir+"/big.bin", body))
 	if w.Code != 413 {
 		t.Fatalf("oversized upload %d", w.Code)
 	}
