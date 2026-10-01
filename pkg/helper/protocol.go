@@ -43,7 +43,12 @@ const (
 // v5: new file operation: the whole file manager (browse, download, upload,
 // edit, mkdir, rename, delete, chmod) executes as root through the helper,
 // so an unprivileged panel no longer fails on root-owned files with 403.
-const ProtocolVersion = 5
+// v6: new site action proxy-apply rewrites a managed proxy site with a
+// multi-node upstream list (nginx upstream / Apache balancer) and optional
+// WebSocket pass-through.
+// v7: new site action conf-apply applies the full site spec (multi-domain
+// binding, default documents, whole-site redirect, pseudo-static presets).
+const ProtocolVersion = 7
 
 // Relay framing for OpTerminal. After the helper answers the terminal request
 // with an OK Response, the connection stops speaking JSON: the panel sends
@@ -139,6 +144,8 @@ var siteActions = map[string]bool{
 	"delete":          true, // remove a marker-bearing managed .conf (and its enabled symlink)
 	"reload":          true, // reload nginx/apache after out-of-band edits
 	"ssl-apply":       true, // rewrite a managed conf with/without HTTPS + reload (config-test guarded)
+	"proxy-apply":     true, // rewrite a managed proxy conf with a new upstream list + reload (config-test guarded)
+	"conf-apply":      true, // rewrite a managed conf from a full SiteSpec (domains, index, redirect, rewrite) + reload
 	"challenge-set":   true, // write one ACME HTTP-01 token file into the fixed challenge dir
 	"challenge-clear": true, // remove one ACME token file (empty token clears the directory)
 }
@@ -232,6 +239,23 @@ type Request struct {
 	ForceHTTPS bool   `json:"force_https,omitempty"`
 	CertFile   string `json:"cert_file,omitempty"`
 	KeyFile    string `json:"key_file,omitempty"`
+	// OpSite proxy-apply fields. ProxyNodes carries the upstream node list
+	// (every entry re-validated helper-side via ValidProxyNode/ValidProxyConf,
+	// which also honors ProxyTarget as a single-node fallback); WebSocket
+	// enables upgrade-header pass-through (nginx only).
+	ProxyNodes []ProxyNode `json:"proxy_nodes,omitempty"`
+	WebSocket  bool        `json:"websocket,omitempty"`
+	// OpSite conf-apply fields. Domains rebinds server_name (each entry
+	// validated, deduplicated, ≤ MaxSiteDomains); Index sets the default
+	// documents of static sites; Redirect*/Rewrite* carry the whole-site
+	// redirect and pseudo-static preset (all re-validated via SiteSpec).
+	Domains          []string `json:"domains,omitempty"`
+	Index            []string `json:"index,omitempty"`
+	RedirectTarget   string   `json:"redirect_target,omitempty"`
+	RedirectCode     int      `json:"redirect_code,omitempty"`
+	RedirectKeepPath bool     `json:"redirect_keep_path,omitempty"`
+	Rewrite          string   `json:"rewrite,omitempty"`
+	RewriteBody      string   `json:"rewrite_body,omitempty"`
 	// OpSite ACME HTTP-01 challenge fields. Token must match the ACME token
 	// alphabet; Auth is the key authorization written as the file content.
 	Token string `json:"token,omitempty"`

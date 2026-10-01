@@ -163,7 +163,9 @@
         <nav class="settings-tabs" aria-label="站点设置分组">
           <button type="button" class="active" data-pane="site-info-pane">基本信息</button>
           <button type="button" data-pane="site-ssl-pane">SSL 证书</button>
-          <button type="button" data-pane="site-domains-pane">域名管理</button>
+          <button type="button" id="site-proxy-tab" data-pane="site-proxy-pane" hidden>反向代理</button>
+          <button type="button" id="site-advanced-tab" data-pane="site-advanced-pane" hidden>高级设置</button>
+          <button type="button" id="site-domains-tab" data-pane="site-domains-pane" hidden>域名管理</button>
         </nav>
         <div class="settings-panes">
           <section id="site-info-pane" class="settings-pane active">
@@ -184,9 +186,42 @@
               <div class="toolbar ssl-actions"><button data-mutation><span data-icon="lock" aria-hidden="true"></span> 申请证书</button><button type="button" id="ssl-off" class="danger" data-mutation hidden>关闭 SSL</button></div>
             </form>
           </section>
+          <section id="site-proxy-pane" class="settings-pane" hidden>
+            <div id="site-proxy-status"></div>
+            <form id="proxy-form" class="stack-form" hidden>
+              <div id="proxy-node-list"></div>
+              <div class="toolbar">
+                <button type="button" id="proxy-add-node" class="secondary">添加节点</button>
+                <label class="toggle-label" id="proxy-ws-label"><input name="websocket" type="checkbox">启用 WebSocket 透传</label>
+              </div>
+              <div class="notice" id="proxy-note">节点按权重分流，权重留空使用默认值；勾选「备用」的节点只在其他节点全部失效时启用。保存后立即重载 Web 服务，配置错误会自动回滚。</div>
+              <div class="toolbar"><button data-mutation>保存并重载</button></div>
+            </form>
+          </section>
+          <section id="site-advanced-pane" class="settings-pane" hidden>
+            <div id="site-advanced-status"></div>
+            <form id="advanced-form" class="stack-form" hidden>
+              <label id="adv-index-label">默认文档<textarea name="index" rows="3" spellcheck="false" placeholder="index.html&#10;index.htm"></textarea><small>按顺序匹配首页文件，仅静态站点（Nginx index / Apache DirectoryIndex）</small></label>
+              <label>重定向目标<input name="redirect_to" type="text" spellcheck="false" placeholder="https://new.example.com（留空 = 不重定向）"></label>
+              <div class="form-columns">
+                <label>跳转类型<select name="redirect_code" aria-label="跳转类型"><option value="301">301 永久重定向</option><option value="302">302 临时重定向</option></select></label>
+                <label class="toggle-label"><input name="redirect_keep_path" type="checkbox">保留原始路径（/a/b → 目标/a/b）</label>
+              </div>
+              <div class="notice">设置重定向后，该站点所有请求只做跳转（ACME 证书续期路径自动豁免）。整站重定向优先于强制 HTTPS。</div>
+              <label id="adv-rewrite-label">伪静态<select name="rewrite" aria-label="伪静态"><option value="">默认（try_files =404）</option><option value="spa">SPA 单页应用（回退 index.html）</option><option value="custom">自定义（Nginx location / 内容）</option></select></label>
+              <label id="adv-rewrite-body-label" hidden>location / 内容<textarea name="rewrite_body" rows="5" spellcheck="false" placeholder="try_files $uri $uri/ /index.html;"></textarea><small>保存前会执行 Nginx 配置测试，失败自动回滚</small></label>
+              <div class="notice" id="adv-note"></div>
+              <div class="toolbar"><button data-mutation>保存设置</button></div>
+            </form>
+          </section>
           <section id="site-domains-pane" class="settings-pane" hidden>
-            <dl id="site-domains" class="info-list"></dl>
-            <p class="section-note">域名来自站点配置文件中的 server_name / ServerName。如需增改域名，请通过「文件」编辑站点配置后执行「重载 Web 服务」。</p>
+            <div id="site-domains-status"></div>
+            <div id="site-domain-list"></div>
+            <div class="toolbar" id="site-domains-actions" hidden>
+              <button type="button" id="site-domain-add" class="secondary">添加域名</button>
+              <button type="button" id="site-domain-save" data-mutation>保存域名</button>
+            </div>
+            <p class="section-note">支持泛解析（*.example.com）与多域名绑定；保存后立即重载 Web 服务，域名已被其他站点绑定时会被拒绝。清空全部域名表示接收所有主机名（_）。</p>
           </section>
         </div>
       </div>

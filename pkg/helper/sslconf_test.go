@@ -6,7 +6,7 @@ import (
 )
 
 func TestSiteConfExNginxSSL(t *testing.T) {
-	conf, err := SiteConfEx("nginx", "static", "blog", "blog.example.com", 80, "/var/www/blog", "", SSLConf{
+	conf, err := SiteConfEx("nginx", "static", "blog", "blog.example.com", 80, "/var/www/blog", ProxyConf{}, SSLConf{
 		Enabled: true, ForceHTTPS: true, Challenge: true,
 		CertFile: "/var/lib/lightpanel/acme/certs/blog.example.com/fullchain.pem",
 		KeyFile:  "/var/lib/lightpanel/acme/certs/blog.example.com/privkey.pem",
@@ -38,7 +38,8 @@ func TestSiteConfExNginxSSL(t *testing.T) {
 }
 
 func TestSiteConfExNginxSSLNoForce(t *testing.T) {
-	conf, err := SiteConfEx("nginx", "proxy", "app", "app.example.com", 80, "", "http://127.0.0.1:3000", SSLConf{
+	conf, err := SiteConfEx("nginx", "proxy", "app", "app.example.com", 80, "",
+		ProxyConf{Nodes: []ProxyNode{{Target: "http://127.0.0.1:3000"}}}, SSLConf{
 		Enabled:   true,
 		Challenge: true,
 		CertFile:  "/var/lib/lightpanel/acme/certs/app.example.com/fullchain.pem",
@@ -56,7 +57,7 @@ func TestSiteConfExNginxSSLNoForce(t *testing.T) {
 }
 
 func TestSiteConfExApacheSSL(t *testing.T) {
-	conf, err := SiteConfEx("apache", "static", "blog", "blog.example.com", 80, "/var/www/blog", "", SSLConf{
+	conf, err := SiteConfEx("apache", "static", "blog", "blog.example.com", 80, "/var/www/blog", ProxyConf{}, SSLConf{
 		Enabled: true, ForceHTTPS: true, Challenge: true,
 		CertFile: "/var/lib/lightpanel/acme/certs/blog.example.com/fullchain.pem",
 		KeyFile:  "/var/lib/lightpanel/acme/certs/blog.example.com/privkey.pem",
@@ -81,7 +82,7 @@ func TestSiteConfExApacheSSL(t *testing.T) {
 
 func TestSiteConfExPlainConfUnchanged(t *testing.T) {
 	for _, engine := range []string{"nginx", "apache"} {
-		conf, err := SiteConfEx(engine, "static", "blog", "blog.example.com", 80, "/var/www/blog", "", SSLConf{})
+		conf, err := SiteConfEx(engine, "static", "blog", "blog.example.com", 80, "/var/www/blog", ProxyConf{}, SSLConf{})
 		if err != nil {
 			t.Fatalf("%s: %v", engine, err)
 		}

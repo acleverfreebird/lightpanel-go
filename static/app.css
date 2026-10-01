@@ -200,6 +200,16 @@ td .actions .text-button.danger-text { color: var(--danger); }
 .pagination > div { display: flex; gap: 8px; }
 .pagination button { min-height: 30px; padding: 4px 12px; font-size: 12px; }
 
+/* 站点设置：反向代理上游节点行 */
+.proxy-node-row { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) auto; gap: 10px; align-items: end; margin-bottom: 10px; }
+.proxy-node-row label { margin-bottom: 0; }
+.proxy-node-opts { display: flex; align-items: center; gap: 10px; }
+.proxy-node-opts input[type=number] { width: 90px; }
+.proxy-node-row .danger-text { margin-bottom: 4px; }
+.domain-row { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; }
+.domain-row label { flex: 1; margin-bottom: 0; }
+.domain-row .danger-text { flex: none; }
+
 /* 数据库管理（宝塔式列表 + 备份中心 + SQL 控制台） */
 .password-cell { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .password-text { font-family: Consolas, monospace; font-size: 12px; max-width: 16em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

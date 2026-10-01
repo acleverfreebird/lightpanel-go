@@ -2,6 +2,7 @@ package sysinfo
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -68,19 +69,33 @@ func (m *CertManager) TaskCenter() *TaskManager {
 // ---- managed site lookup ----
 
 // managedSite is a site parsed straight from its (marker-bearing) config
-// file. Only these sites support one-click SSL: the configuration template
-// is fully owned by the panel.
+// file. Only these sites support one-click SSL and reverse-proxy editing:
+// the configuration template is fully owned by the panel.
 type managedSite struct {
-	ID         string
-	Engine     string
-	Kind       string
-	Domain     string
-	Port       int
-	Root       string
+	ID string
+	Engine string
+	Kind   string
+	Domain string
+	Port   int
+	Root   string
+	// ProxyPass is the raw proxy_pass/ProxyPass target (for multi-node sites
+	// the balancer URL); ProxyNodes is the expanded upstream list and
+	// WebSocket the upgrade-header flag. Rewrites carry all three so the
+	// regenerated configuration keeps the site's proxy topology.
+	ProxyNodes []helper.ProxyNode
+	WebSocket  bool
 	ProxyPass  string
-	SSL        bool
-	SiteName   string
-	ServerName string
+	// Advanced settings parsed back from the configuration; rewrites carry
+	// them so no feature is dropped when another one changes.
+	Index            []string
+	RedirectCode     int
+	RedirectTarget   string
+	RedirectKeepPath bool
+	Rewrite          string
+	RewriteBody      string
+	SSL              bool
+	SiteName         string
+	ServerName       string
 }
 
 // loadManagedSite re-reads and re-parses the site configuration identified
@@ -114,7 +129,9 @@ func loadManagedSite(id string) (*managedSite, error) {
 		return nil, errors.New("unsupported engine path")
 	}
 	site := &managedSite{ID: id, Engine: engine, Port: 80}
+	var locationBody string
 	if engine == "nginx" {
+		upstreams := parseNginxUpstreams(conf)
 		blocks := parseNginxServers(conf)
 		if len(blocks) == 0 {
 			return nil, errors.New("no server block found in configuration")
@@ -123,8 +140,19 @@ func loadManagedSite(id string) (*managedSite, error) {
 		site.SSL = b.ssl
 		site.Root = b.root
 		site.ProxyPass = b.proxyPass
+		site.WebSocket = b.proxyWS
+		site.Index = b.index
+		site.RedirectCode = b.redirectCode
+		site.RedirectTarget = b.redirectTarget
+		site.RedirectKeepPath = b.redirectKeepPath
+		if up := upstreamFor(upstreams, b.proxyPass); up != nil {
+			site.ProxyNodes = up.servers
+		} else if b.proxyPass != "" {
+			site.ProxyNodes = []helper.ProxyNode{{Target: b.proxyPass}}
+		}
 		site.ServerName = strings.Join(b.serverNames, " ")
 		site.Domain = firstRealDomain(b.serverNames)
+		locationBody = extractNginxLocationBody(conf)
 		for _, p := range b.ports {
 			if p != 443 {
 				site.Port = p
@@ -140,8 +168,14 @@ func loadManagedSite(id string) (*managedSite, error) {
 		site.SSL = v.ssl
 		site.Root = v.documentRoot
 		site.ProxyPass = v.proxyPass
-		site.ServerName = v.serverName
-		site.Domain = firstRealDomain([]string{v.serverName})
+		site.ProxyNodes = v.proxyNodes
+		site.Index = v.directoryIndex
+		site.RedirectCode = v.redirectCode
+		site.RedirectTarget = v.redirectTarget
+		site.RedirectKeepPath = v.redirectKeepPath
+		names := append([]string{v.serverName}, v.aliases...)
+		site.ServerName = strings.Join(names, " ")
+		site.Domain = firstRealDomain(names)
 		for _, p := range vhostPorts(v.addr) {
 			if p != 443 {
 				site.Port = p
@@ -159,6 +193,9 @@ func loadManagedSite(id string) (*managedSite, error) {
 		if site.Root == "" {
 			return nil, errors.New("站点配置缺少 root/DocumentRoot")
 		}
+	}
+	if engine == "nginx" {
+		site.Rewrite, site.RewriteBody = nginxRewriteOf(site.Kind, site.RedirectTarget, locationBody)
 	}
 	// 站点名取自配置文件名（与创建站点时的名称一致），ssl-apply 据此定位
 	// 配置文件；不要从域名派生，两者可能完全不同。
@@ -181,15 +218,63 @@ func firstRealDomain(names []string) string {
 
 // ---- privileged operations (helper in least-privilege mode, direct as root) ----
 
+// proxyConfOf rebuilds the upstream settings of a parsed site so any rewrite
+// (SSL apply, renewal) preserves the existing proxy topology.
+func proxyConfOf(site *managedSite) helper.ProxyConf {
+	if site.Kind != "proxy" {
+		return helper.ProxyConf{}
+	}
+	if len(site.ProxyNodes) > 0 {
+		return helper.ProxyConf{Nodes: site.ProxyNodes, WebSocket: site.WebSocket}
+	}
+	return helper.ProxyConf{Nodes: []helper.ProxyNode{{Target: site.ProxyPass}}}
+}
+
+// siteDomains splits the parsed server names into the concrete domain list
+// (the "_" placeholder is not a domain).
+func siteDomains(site *managedSite) []string {
+	var domains []string
+	for _, name := range strings.Fields(site.ServerName) {
+		if name != "_" {
+			domains = append(domains, name)
+		}
+	}
+	return domains
+}
+
+// specOf rebuilds the full SiteSpec of a parsed site so any rewrite keeps
+// every feature the configuration currently carries (domains, default
+// documents, redirect, pseudo-static, upstream, SSL).
+func specOf(site *managedSite, ssl helper.SSLConf) helper.SiteSpec {
+	spec := helper.SiteSpec{
+		Name: site.SiteName, Engine: site.Engine, Kind: site.Kind,
+		Domains: siteDomains(site), Port: site.Port, Root: site.Root,
+		Proxy: proxyConfOf(site), SSL: ssl,
+		Index: site.Index, Rewrite: site.Rewrite, RewriteBody: site.RewriteBody,
+	}
+	if site.RedirectTarget != "" {
+		spec.Redirect = &helper.Redirect{
+			Target: site.RedirectTarget, Code: site.RedirectCode, KeepPath: site.RedirectKeepPath,
+		}
+	}
+	return spec
+}
+
 // applySSL rewrites the site configuration through the helper's ssl-apply
-// action (config-test guarded, rollback on failure). In root mode the same
-// rendering and guard runs locally.
+// action (config-test guarded, rollback on failure). The full site spec
+// travels with the request so the re-rendered file keeps every other
+// feature. In root mode the same rendering and guard runs locally.
 func (m *CertManager) applySSL(ctx context.Context, site *managedSite, ssl helper.SSLConf) error {
 	req := helper.Request{
 		Op: helper.OpSite, Action: "ssl-apply",
 		Engine: site.Engine, Site: site.SiteName, Kind: site.Kind,
 		Domain: site.Domain, Port: strconv.Itoa(site.Port),
 		Root: site.Root, ProxyTarget: site.ProxyPass,
+		ProxyNodes: site.ProxyNodes, WebSocket: site.WebSocket,
+		Domains: siteDomains(site), Index: site.Index,
+		RedirectTarget: site.RedirectTarget, RedirectCode: site.RedirectCode,
+		RedirectKeepPath: site.RedirectKeepPath,
+		Rewrite: site.Rewrite, RewriteBody: site.RewriteBody,
 		SSLOn: ssl.Enabled, ForceHTTPS: ssl.ForceHTTPS,
 		CertFile: ssl.CertFile, KeyFile: ssl.KeyFile,
 	}
@@ -199,10 +284,38 @@ func (m *CertManager) applySSL(ctx context.Context, site *managedSite, ssl helpe
 		}
 		return nil
 	}
-	return m.applySSLDirect(ctx, site, ssl)
+	return m.rewriteManagedDirect(ctx, site, specOf(site, ssl))
 }
 
-func (m *CertManager) applySSLDirect(ctx context.Context, site *managedSite, ssl helper.SSLConf) error {
+// currentSSLConf reconstructs the SSL state of a managed site from the panel
+// certificate store, so rewrites (proxy editing) never drop an existing
+// HTTPS block. A site whose configuration has HTTPS but whose certificate is
+// unknown to the panel (issued externally) is refused instead of silently
+// downgraded.
+func (m *CertManager) currentSSLConf(site *managedSite) (helper.SSLConf, error) {
+	if !site.SSL {
+		return helper.SSLConf{Challenge: true}, nil
+	}
+	items, err := m.Store.List()
+	if err == nil {
+		for _, item := range items {
+			if item.Domain != site.Domain {
+				continue
+			}
+			certPath, keyPath := m.Store.Paths(site.Domain)
+			return helper.SSLConf{
+				Enabled: true, ForceHTTPS: item.ForceHTTPS, Challenge: true,
+				CertFile: certPath, KeyFile: keyPath,
+			}, nil
+		}
+	}
+	return helper.SSLConf{}, errors.New("站点配置已启用 HTTPS，但面板没有该域名的证书记录（可能由外部工具签发），无法自动改写；请通过「文件」编辑站点配置")
+}
+
+// rewriteManagedDirect is the root-panel twin of the helper's siteApply:
+// re-render the full spec, install atomically, config-test guard with
+// rollback, then reload.
+func (m *CertManager) rewriteManagedDirect(ctx context.Context, site *managedSite, spec helper.SiteSpec) error {
 	if !isManagedConfPath(site.ID) {
 		return errors.New("configuration path is outside the managed directories")
 	}
@@ -213,7 +326,7 @@ func (m *CertManager) applySSLDirect(ctx context.Context, site *managedSite, ssl
 	if len(current) > 512<<10 || !fileManaged(site.ID) {
 		return errors.New("refusing to rewrite: configuration was not created by lightpanel")
 	}
-	content, err := helper.SiteConfEx(site.Engine, site.Kind, site.SiteName, site.Domain, site.Port, site.Root, site.ProxyPass, ssl)
+	content, err := helper.RenderSite(spec)
 	if err != nil {
 		return err
 	}
@@ -224,10 +337,271 @@ func (m *CertManager) applySSLDirect(ctx context.Context, site *managedSite, ssl
 		_ = writeConfFile(site.ID, string(current))
 		return fmt.Errorf("配置测试失败，已恢复原配置：%w：%s", err, helper.TrimOutput(out))
 	}
+	// HTTP-01 挑战与站点访问共用 80 端口：发行版默认站点还占着默认槽位
+	// 时一并停用（best-effort，不阻塞改写）。
+	helper.TakeOverDefaultSite(site.Engine, site.Port)
 	if _, err := m.sites.reloadEngine(ctx, site.Engine); err != nil {
 		return fmt.Errorf("配置已写入，但重载 %s 失败：%w", site.Engine, err)
 	}
 	return nil
+}
+
+// parseProxyNodes parses the JSON upstream list from the form. Entries are
+// validated here and re-validated independently by the helper.
+func parseProxyNodes(raw string) ([]helper.ProxyNode, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, errors.New("至少保留一个上游节点")
+	}
+	var nodes []helper.ProxyNode
+	if err := json.Unmarshal([]byte(raw), &nodes); err != nil {
+		return nil, errors.New("节点数据格式错误")
+	}
+	if err := helper.ValidProxyConf("nginx", helper.ProxyConf{Nodes: nodes}); err != nil {
+		return nil, err
+	}
+	return nodes, nil
+}
+
+// SiteProxy 保存反向代理站点的上游设置（节点增删、权重、备用、WebSocket）。
+// 改写从磁盘上的配置重新出发并保留其 SSL 状态；仅面板创建的托管站点支持。
+func (m *CertManager) SiteProxy(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.FormValue("id"))
+	if id == "" {
+		http.Error(w, "site id is required", 400)
+		return
+	}
+	nodes, err := parseProxyNodes(r.FormValue("nodes"))
+	if err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	websocket := r.FormValue("websocket") == "true"
+	site, err := m.loadSite(id)
+	if err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	if site.Kind != "proxy" {
+		http.Error(w, "仅反向代理站点支持上游设置", 400)
+		return
+	}
+	if websocket && site.Engine != "nginx" {
+		http.Error(w, "WebSocket 透传仅支持 Nginx 站点", 400)
+		return
+	}
+	ssl, err := m.currentSSLConf(site)
+	if err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	req := helper.Request{
+		Op: helper.OpSite, Action: "proxy-apply",
+		Engine: site.Engine, Site: site.SiteName, Kind: "proxy",
+		Domain: site.Domain, Port: strconv.Itoa(site.Port),
+		ProxyNodes: nodes, WebSocket: websocket,
+		Domains: siteDomains(site),
+		SSLOn: ssl.Enabled, ForceHTTPS: ssl.ForceHTTPS,
+		CertFile: ssl.CertFile, KeyFile: ssl.KeyFile,
+	}
+	if out, routed, err := privileged(r.Context(), req); routed {
+		if err != nil {
+			commandError(w, out, err)
+			return
+		}
+		JSON(w, map[string]string{"message": "反向代理设置已保存，" + site.Engine + " 配置已重载"})
+		return
+	}
+	spec := specOf(site, ssl)
+	spec.Proxy = helper.ProxyConf{Nodes: nodes, WebSocket: websocket}
+	if err := m.rewriteManagedDirect(r.Context(), site, spec); err != nil {
+		commandError(w, "", err)
+		return
+	}
+	JSON(w, map[string]string{"message": "反向代理设置已保存，" + site.Engine + " 配置已重载"})
+}
+
+// parseDomainList parses the JSON domain list from the form; an empty list
+// means "bind-all" ("_"). Entries are lowercased, deduplicated and validated
+// (the helper re-validates independently).
+func parseDomainList(raw string) ([]string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	var domains []string
+	if err := json.Unmarshal([]byte(raw), &domains); err != nil {
+		return nil, errors.New("域名数据格式错误")
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, d := range domains {
+		d = strings.ToLower(strings.TrimSpace(d))
+		if d == "" || d == "_" {
+			continue
+		}
+		if !validServerName(d) {
+			return nil, errors.New("无效域名: " + d)
+		}
+		if seen[d] {
+			continue
+		}
+		seen[d] = true
+		out = append(out, d)
+	}
+	if len(out) > helper.MaxSiteDomains {
+		return nil, fmt.Errorf("每个站点最多绑定 %d 个域名", helper.MaxSiteDomains)
+	}
+	return out, nil
+}
+
+// parseIndexLines splits the default-document textarea into entries (one per
+// line, comma allowed).
+func parseIndexLines(raw string) []string {
+	var out []string
+	for _, line := range strings.FieldsFunc(raw, func(r rune) bool { return r == '\n' || r == '\r' || r == ',' }) {
+		if name := strings.TrimSpace(line); name != "" {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// siteScanDirs lists the configuration directories the domain conflict scan
+// walks, per engine. A var so tests can point it at temporary directories.
+var siteScanDirs = map[string][]string{
+	"nginx":  {"/etc/nginx/sites-enabled/", "/etc/nginx/conf.d/"},
+	"apache": {"/etc/apache2/sites-enabled/", "/etc/apache2/conf.d/", "/etc/httpd/conf.d/"},
+}
+
+// domainOverlap reports whether two hosts would fight over the same
+// requests: exact match or one covered by the other's wildcard.
+func domainOverlap(a, b string) bool {
+	a, b = strings.ToLower(a), strings.ToLower(b)
+	if a == b {
+		return true
+	}
+	if base, ok := strings.CutPrefix(a, "*."); ok {
+		return strings.HasSuffix(b, "."+base)
+	}
+	if base, ok := strings.CutPrefix(b, "*."); ok {
+		return strings.HasSuffix(a, "."+base)
+	}
+	return false
+}
+
+// domainConflicts returns the requested domains already bound by another
+// site. Duplicate server_name entries silently shadow each other in nginx —
+// a trap BT-style panels leave to the admin — so the panel refuses upfront.
+func (m *CertManager) domainConflicts(ctx context.Context, selfID string, domains []string) []string {
+	if len(domains) == 0 {
+		return nil
+	}
+	var conflicts []string
+	seen := map[string]bool{}
+	for engine, dirs := range siteScanDirs {
+		for _, other := range m.sites.confDirSites(ctx, dirs, engine, true) {
+			if other.ID == selfID {
+				continue
+			}
+			for _, d := range domains {
+				for _, bound := range other.ServerNames {
+					if bound == "_" || !domainOverlap(d, bound) {
+						continue
+					}
+					key := d + "（已绑定于 " + strings.Join(other.ServerNames, " ") + "）"
+					if !seen[key] {
+						seen[key] = true
+						conflicts = append(conflicts, key)
+					}
+				}
+			}
+		}
+	}
+	return conflicts
+}
+
+// SiteConf 应用站点高级设置（域名绑定、默认文档、整站重定向、伪静态）。
+// 面板从磁盘配置重建当前状态、叠加表单修改后提交完整 spec，重渲染后所有
+// 功能互不覆盖；仅面板创建的托管站点支持。
+func (m *CertManager) SiteConf(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	id := strings.TrimSpace(r.FormValue("id"))
+	if id == "" {
+		http.Error(w, "site id is required", 400)
+		return
+	}
+	site, err := m.loadSite(id)
+	if err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	domains, err := parseDomainList(r.FormValue("domains"))
+	if err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	if conflicts := m.domainConflicts(ctx, site.ID, domains); len(conflicts) > 0 {
+		http.Error(w, "域名已被其他站点绑定："+strings.Join(conflicts, "；"), 400)
+		return
+	}
+	ssl, err := m.currentSSLConf(site)
+	if err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	spec := specOf(site, ssl)
+	spec.Domains = domains
+	if site.Kind == "static" {
+		spec.Index = parseIndexLines(r.FormValue("index"))
+		if site.Engine == "nginx" {
+			rewrite := r.FormValue("rewrite")
+			if rewrite == "default" {
+				rewrite = ""
+			}
+			if !helper.ValidRewritePreset(rewrite) {
+				http.Error(w, "未知的伪静态预设", 400)
+				return
+			}
+			spec.Rewrite = rewrite
+			spec.RewriteBody = r.FormValue("rewrite_body")
+		}
+	}
+	if target := strings.TrimSpace(r.FormValue("redirect_to")); target != "" {
+		code, err := strconv.Atoi(r.FormValue("redirect_code"))
+		if err != nil || code == 0 {
+			code = 301
+		}
+		spec.Redirect = &helper.Redirect{
+			Target: target, Code: code, KeepPath: r.FormValue("redirect_keep_path") == "true",
+		}
+	}
+	req := helper.Request{
+		Op: helper.OpSite, Action: "conf-apply",
+		Engine: site.Engine, Site: site.SiteName, Kind: site.Kind,
+		Port: strconv.Itoa(site.Port), Root: spec.Root,
+		ProxyNodes: spec.Proxy.Nodes, WebSocket: spec.Proxy.WebSocket,
+		Domains: spec.Domains, Index: spec.Index,
+		Rewrite: spec.Rewrite, RewriteBody: spec.RewriteBody,
+		SSLOn: ssl.Enabled, ForceHTTPS: ssl.ForceHTTPS,
+		CertFile: ssl.CertFile, KeyFile: ssl.KeyFile,
+	}
+	if spec.Redirect != nil {
+		req.RedirectTarget = spec.Redirect.Target
+		req.RedirectCode = spec.Redirect.Code
+		req.RedirectKeepPath = spec.Redirect.KeepPath
+	}
+	if out, routed, err := privileged(ctx, req); routed {
+		if err != nil {
+			commandError(w, out, err)
+			return
+		}
+		JSON(w, map[string]string{"message": "站点设置已保存，" + site.Engine + " 配置已重载"})
+		return
+	}
+	if err := m.rewriteManagedDirect(ctx, site, spec); err != nil {
+		commandError(w, "", err)
+		return
+	}
+	JSON(w, map[string]string{"message": "站点设置已保存，" + site.Engine + " 配置已重载"})
 }
 
 // configTest runs the engine's syntax check with the panel's own runner.

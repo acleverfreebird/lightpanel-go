@@ -56,10 +56,23 @@ type Site struct {
 	Ports       []int    `json:"ports"`
 	Root        string   `json:"root"`
 	ProxyPass   string   `json:"proxy_pass,omitempty"`
-	SSL         bool     `json:"ssl"`
-	State       string   `json:"state"`
-	Managed     bool     `json:"managed"`
-	Detail      string   `json:"detail"`
+	// ProxyNodes carries the upstream list of proxy sites: the balancer
+	// members for multi-node groups, otherwise the single target. It is what
+	// the reverse-proxy settings pane edits.
+	ProxyNodes []helper.ProxyNode `json:"proxy_nodes,omitempty"`
+	WebSocket  bool               `json:"websocket,omitempty"`
+	// Advanced settings round-tripped from the configuration: default
+	// documents, whole-site redirect and pseudo-static preset (nginx).
+	Index            []string `json:"index,omitempty"`
+	RedirectTarget   string   `json:"redirect_target,omitempty"`
+	RedirectCode     int      `json:"redirect_code,omitempty"`
+	RedirectKeepPath bool     `json:"redirect_keep_path,omitempty"`
+	Rewrite          string   `json:"rewrite,omitempty"`
+	RewriteBody      string   `json:"rewrite_body,omitempty"`
+	SSL              bool     `json:"ssl"`
+	State            string   `json:"state"`
+	Managed          bool     `json:"managed"`
+	Detail           string   `json:"detail"`
 }
 
 type SiteManager struct {
@@ -207,8 +220,17 @@ type nginxServer struct {
 	ssl         bool
 	serverNames []string
 	root        string
+	index       []string
 	proxyPass   string
+	proxyWS     bool
+	// redirect* capture a whole-site return (301/302/307/308) that is not
+	// the generated force-HTTPS rule.
+	redirectCode     int
+	redirectTarget   string
+	redirectKeepPath bool
 }
+
+var siteRedirectCodes = map[string]bool{"301": true, "302": true, "307": true, "308": true}
 
 func listenPort(arg string) (int, bool) {
 	arg = strings.TrimSpace(arg)
@@ -286,9 +308,29 @@ func nginxServerFromBody(body []nginxToken) nginxServer {
 			if len(args) > 0 && s.root == "" {
 				s.root = args[0]
 			}
+		case "index":
+			if len(args) > 0 && s.index == nil {
+				s.index = args
+			}
 		case "proxy_pass":
 			if len(args) > 0 && s.proxyPass == "" {
 				s.proxyPass = args[0]
+			}
+		case "proxy_set_header":
+			if len(args) > 0 && strings.EqualFold(args[0], "upgrade") {
+				s.proxyWS = true
+			}
+		case "return":
+			// Whole-site redirect: a return with a numeric code and an
+			// absolute target. The generated force-HTTPS rule (https://$host…)
+			// is not a site redirect.
+			if len(args) >= 2 && siteRedirectCodes[args[0]] && !strings.Contains(args[1], "$host") && s.redirectTarget == "" {
+				s.redirectCode, _ = strconv.Atoi(args[0])
+				if keep, ok := strings.CutSuffix(args[1], "$request_uri"); ok {
+					s.redirectTarget, s.redirectKeepPath = keep, true
+				} else {
+					s.redirectTarget = args[1]
+				}
 			}
 		}
 	}
@@ -297,17 +339,169 @@ func nginxServerFromBody(body []nginxToken) nginxServer {
 
 // ---- apache config parsing ----
 
-type apacheVHost struct {
-	addr         string
-	serverName   string
-	documentRoot string
-	proxyPass    string
-	ssl          bool
+// nginxUpstream is one parsed upstream group with its load-balanced members.
+type nginxUpstream struct {
+	name    string
+	servers []helper.ProxyNode
 }
 
+// parseNginxUpstreams extracts top-level upstream blocks — the load-balancing
+// groups panel proxy sites generate — with each member's address, weight and
+// backup flag. Entries inside the group's server directives are the only
+// directives of interest.
+func parseNginxUpstreams(conf string) []nginxUpstream {
+	tokens := nginxTokens(conf)
+	var groups []nginxUpstream
+	for i := 0; i < len(tokens); i++ {
+		if tokens[i].text != "upstream" || i+1 >= len(tokens) || tokens[i+1].braceOpen {
+			continue
+		}
+		name := tokens[i+1].text
+		if i+2 >= len(tokens) || !tokens[i+2].braceOpen {
+			continue
+		}
+		var servers []helper.ProxyNode
+		depth := 1
+		for j := i + 3; j < len(tokens) && depth > 0; j++ {
+			switch {
+			case tokens[j].braceOpen:
+				depth++
+			case tokens[j].braceClose:
+				depth--
+			case tokens[j].text == "server" && depth == 1:
+				k := j + 1
+				var args []string
+				for ; k < len(tokens) && !tokens[k].terminator && !tokens[k].braceOpen && !tokens[k].braceClose; k++ {
+					args = append(args, tokens[k].text)
+				}
+				if len(args) > 0 {
+					node := helper.ProxyNode{Target: args[0]}
+					for _, arg := range args[1:] {
+						if w, ok := strings.CutPrefix(arg, "weight="); ok {
+							node.Weight, _ = strconv.Atoi(w)
+						} else if arg == "backup" {
+							node.Backup = true
+						}
+					}
+					servers = append(servers, node)
+				}
+				j = k - 1
+			}
+		}
+		if name != "" && len(servers) > 0 {
+			groups = append(groups, nginxUpstream{name: name, servers: servers})
+		}
+	}
+	return groups
+}
+
+// upstreamFor resolves the upstream group a proxy_pass points at, if any.
+func upstreamFor(groups []nginxUpstream, proxyPass string) *nginxUpstream {
+	rest, ok := strings.CutPrefix(proxyPass, "http://")
+	if !ok {
+		rest, ok = strings.CutPrefix(proxyPass, "https://")
+	}
+	if !ok {
+		return nil
+	}
+	rest = strings.TrimSuffix(rest, "/")
+	for i := range groups {
+		if groups[i].name == rest {
+			return &groups[i]
+		}
+	}
+	return nil
+}
+
+// ---- apache config parsing ----
+
+// extractNginxLocationBody returns the body of the "location / {" block as
+// written (line-based brace counting), for round-tripping custom
+// pseudo-static snippets.
+func extractNginxLocationBody(conf string) string {
+	lines := strings.Split(conf, "\n")
+	start := -1
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "location / {" {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		return ""
+	}
+	var body []string
+	depth := 1
+	for i := start + 1; i < len(lines) && depth > 0; i++ {
+		t := strings.TrimSpace(lines[i])
+		depth += strings.Count(t, "{") - strings.Count(t, "}")
+		if depth <= 0 {
+			break
+		}
+		if t != "" {
+			body = append(body, t)
+		}
+	}
+	return strings.Join(body, "\n")
+}
+
+// nginxRewriteOf derives the pseudo-static preset of a static site from its
+// location / body: the two canonical try_files lines map to the default and
+// spa presets, anything else is a custom snippet (round-tripped verbatim).
+func nginxRewriteOf(kind, redirectTarget, locationBody string) (preset, body string) {
+	if kind != "static" || redirectTarget != "" {
+		return "", ""
+	}
+	switch strings.Join(strings.Fields(locationBody), " ") {
+	case "try_files $uri $uri/ /index.html;":
+		return "spa", ""
+	case "try_files $uri $uri/ =404;", "":
+		return "", ""
+	default:
+		return "custom", locationBody
+	}
+}
+
+type apacheVHost struct {
+	addr           string
+	serverName     string
+	aliases        []string
+	documentRoot   string
+	directoryIndex []string
+	proxyPass      string
+	proxyNodes     []helper.ProxyNode
+	ssl            bool
+	// Whole-site redirect (not the generated force-HTTPS rule).
+	redirectCode     int
+	redirectTarget   string
+	redirectKeepPath bool
+}
+
+// apacheRedirectCode normalizes Apache's status keywords and numbers.
+func apacheRedirectCode(s string) int {
+	switch strings.ToLower(s) {
+	case "permanent":
+		return 301
+	case "temp":
+		return 302
+	case "seeother":
+		return 303
+	}
+	if code, err := strconv.Atoi(s); err == nil && siteRedirectCodes[s] {
+		return code
+	}
+	return 0
+}
+
+// parseApacheVHosts walks the file line by line. Balancer groups may sit at
+// server level (panel-generated configurations emit them before the
+// VirtualHost pair), so <Proxy>/<BalancerMember> lines are collected into
+// named groups and attached when a ProxyPass references the balancer.
 func parseApacheVHosts(conf string) []apacheVHost {
 	var vhosts []apacheVHost
 	var current *apacheVHost
+	balancers := map[string][]helper.ProxyNode{}
+	currentBalancer := ""
 	for _, line := range strings.Split(conf, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if i := strings.Index(trimmed, "#"); i >= 0 {
@@ -324,6 +518,27 @@ func parseApacheVHosts(conf string) []apacheVHost {
 			current = &vhosts[len(vhosts)-1]
 		case strings.HasPrefix(lower, "</virtualhost"):
 			current = nil
+		case strings.HasPrefix(lower, "<proxy"):
+			// 归一化 balancer 组名（去 scheme 与尾斜杠），与 ProxyPass 引用
+			// 时的查找键保持一致。
+			name := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(trimmed[len("<Proxy"):]), ">"))
+			currentBalancer = strings.TrimSuffix(strings.TrimPrefix(name, "balancer://"), "/")
+		case strings.HasPrefix(lower, "</proxy"):
+			currentBalancer = ""
+		case currentBalancer != "" && strings.HasPrefix(lower, "balancermember"):
+			fields := strings.Fields(trimmed)
+			if len(fields) < 2 {
+				continue
+			}
+			node := helper.ProxyNode{Target: fields[1]}
+			for _, arg := range fields[2:] {
+				if w, ok := strings.CutPrefix(arg, "loadfactor="); ok {
+					node.Weight, _ = strconv.Atoi(w)
+				} else if arg == "status=+H" {
+					node.Backup = true
+				}
+			}
+			balancers[currentBalancer] = append(balancers[currentBalancer], node)
 		case current != nil:
 			fields := strings.Fields(trimmed)
 			switch strings.ToLower(fields[0]) {
@@ -331,17 +546,56 @@ func parseApacheVHosts(conf string) []apacheVHost {
 				if len(fields) > 1 {
 					current.serverName = fields[1]
 				}
+			case "serveralias":
+				current.aliases = append(current.aliases, fields[1:]...)
 			case "documentroot":
 				if len(fields) > 1 {
 					current.documentRoot = fields[1]
+				}
+			case "directoryindex":
+				if len(fields) > 1 && current.directoryIndex == nil {
+					current.directoryIndex = fields[1:]
 				}
 			case "sslengine":
 				if len(fields) > 1 && strings.EqualFold(fields[1], "on") {
 					current.ssl = true
 				}
+			case "redirect":
+				// Redirect [status] /target — the path prefix is re-appended
+				// by Apache, so plain Redirect always keeps the path.
+				if len(fields) == 4 && current.redirectTarget == "" {
+					current.redirectCode = apacheRedirectCode(fields[1])
+					current.redirectTarget, current.redirectKeepPath = fields[3], true
+				} else if len(fields) == 3 && current.redirectTarget == "" {
+					current.redirectCode, current.redirectTarget, current.redirectKeepPath = 302, fields[2], true
+				}
+			case "redirectmatch":
+				// 面板生成的规则都带挑战豁免 pattern；keep-path 的目标以
+				// /$1 结尾。外部 $1 规则保持不解析；强制 HTTPS（跳转到自
+				// 己的 ServerName）不是站点重定向。
+				if len(fields) >= 4 && current.redirectTarget == "" {
+					pattern, target := fields[2], fields[3]
+					keep := false
+					if keepPath, ok := strings.CutSuffix(target, "/$1"); ok {
+						target, keep = keepPath, true
+					}
+					if current.serverName != "" && strings.EqualFold(target, "https://"+current.serverName) {
+						break
+					}
+					own := strings.Contains(pattern, "acme-challenge")
+					external := strings.Contains(pattern, "$1") || strings.Contains(target, "$1")
+					if code := apacheRedirectCode(fields[1]); code != 0 && (own || !external) {
+						current.redirectCode = code
+						current.redirectTarget = target
+						current.redirectKeepPath = keep
+					}
+				}
 			case "proxypass":
 				if len(fields) > 2 && current.proxyPass == "" {
 					current.proxyPass = fields[2]
+					if name, ok := strings.CutPrefix(fields[2], "balancer://"); ok {
+						current.proxyNodes = balancers[strings.TrimSuffix(name, "/")]
+					}
 				}
 			}
 		}
@@ -397,19 +651,33 @@ func (m *SiteManager) confDirSites(ctx context.Context, dirs []string, engine st
 			conf := string(data)
 			managed := bytes.Contains(data, []byte(helper.ManagedMarker))
 			if engine == "nginx" {
+				upstreams := parseNginxUpstreams(conf)
+				locationBody := extractNginxLocationBody(conf)
 				for _, block := range parseNginxServers(conf) {
 					kind := "static"
+					var nodes []helper.ProxyNode
 					if block.proxyPass != "" {
 						kind = "proxy"
+						if up := upstreamFor(upstreams, block.proxyPass); up != nil {
+							nodes = up.servers
+						} else {
+							nodes = []helper.ProxyNode{{Target: block.proxyPass}}
+						}
 					}
 					names := block.serverNames
 					if len(names) == 0 {
 						names = []string{"_"}
 					}
+					preset, customBody := nginxRewriteOf(kind, block.redirectTarget, locationBody)
 					sites = append(sites, Site{
 						ID: path, Engine: engine, Kind: kind,
 						ServerNames: names, Ports: block.ports, Root: block.root,
-						ProxyPass: block.proxyPass, SSL: block.ssl,
+						ProxyPass: block.proxyPass, ProxyNodes: nodes, WebSocket: block.proxyWS,
+						Index: block.index,
+						RedirectTarget: block.redirectTarget, RedirectCode: block.redirectCode,
+						RedirectKeepPath: block.redirectKeepPath,
+						Rewrite: preset, RewriteBody: customBody,
+						SSL: block.ssl,
 						State:   map[bool]string{true: "active", false: "inactive"}[engineActive],
 						Managed: managed, Detail: name,
 					})
@@ -417,19 +685,28 @@ func (m *SiteManager) confDirSites(ctx context.Context, dirs []string, engine st
 			} else {
 				for _, vh := range parseApacheVHosts(conf) {
 					kind := "static"
+					var nodes []helper.ProxyNode
 					if vh.proxyPass != "" {
 						kind = "proxy"
+						nodes = []helper.ProxyNode{{Target: vh.proxyPass}}
+						if len(vh.proxyNodes) > 0 {
+							nodes = vh.proxyNodes
+						}
 					}
-					names := []string{}
+					names := append([]string{}, vh.aliases...)
 					if vh.serverName != "" {
-						names = append(names, vh.serverName)
-					} else {
+						names = append([]string{vh.serverName}, names...)
+					} else if len(names) == 0 {
 						names = append(names, "_")
 					}
 					sites = append(sites, Site{
 						ID: path, Engine: engine, Kind: kind,
 						ServerNames: names, Ports: vhostPorts(vh.addr), Root: vh.documentRoot,
-						ProxyPass: vh.proxyPass, SSL: vh.ssl,
+						ProxyPass: vh.proxyPass, ProxyNodes: nodes,
+						Index: vh.directoryIndex,
+						RedirectTarget: vh.redirectTarget, RedirectCode: vh.redirectCode,
+						RedirectKeepPath: vh.redirectKeepPath,
+						SSL: vh.ssl,
 						State:   map[bool]string{true: "active", false: "inactive"}[engineActive],
 						Managed: managed, Detail: name,
 					})
@@ -589,6 +866,11 @@ func (m *SiteManager) createNativeSite(ctx context.Context, engine, kind, name, 
 			}
 			return fmt.Errorf("site create failed: %w", err)
 		}
+		// helper 会在创建时停用发行版默认站点（TakeOverDefaultSite），说明
+		// 文字随 Output 返回，透传到任务输出里让用户知道发生了什么。
+		if out = helper.TrimOutput(out); out != "" {
+			appendOut(out)
+		}
 		return nil
 	}
 	if kind == "proxy" {
@@ -638,6 +920,11 @@ func (m *SiteManager) createNativeSite(ctx context.Context, engine, kind, name, 
 			os.Remove(confPath)
 			return err
 		}
+	}
+	// root 模式下面板自己执行与 helper 相同的步骤：重载前停用发行版默认
+	// 站点，新站点才能真正收到端口 80 的请求。
+	if note := helper.TakeOverDefaultSite(engine, port); note != "" {
+		appendOut(note)
 	}
 	if _, err := m.reloadEngine(ctx, engine); err != nil {
 		return fmt.Errorf("site created, but reloading %s failed: %w", engine, err)

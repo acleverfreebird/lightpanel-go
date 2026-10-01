@@ -94,6 +94,8 @@ func newHandler(cfg *config.Config, files *sysinfo.Files, manager *sysinfo.Manag
 	register("POST /api/sites/action", sites.SiteAction)
 	register("GET /api/sites/certs", sslCerts.List)
 	register("POST /api/sites/ssl", sslCerts.SSL)
+	register("POST /api/sites/proxy", sslCerts.SiteProxy)
+	register("POST /api/sites/conf", sslCerts.SiteConf)
 	apps := sysinfo.NewAppManager(tasks)
 	register("GET /api/apps", apps.Apps)
 	register("POST /api/apps/install", apps.AppInstall)

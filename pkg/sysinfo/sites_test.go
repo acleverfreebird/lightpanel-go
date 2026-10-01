@@ -5,11 +5,14 @@ import (
 	"errors"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"lightpanel/pkg/certs"
 	"lightpanel/pkg/helper"
 )
 
@@ -407,6 +410,379 @@ func TestCreateNativeSiteRoutesThroughHelper(t *testing.T) {
 	}
 	if err := m.createNativeSite(context.Background(), "nginx", "static", "blog", "", 80, "", "", nil); !errors.Is(err, errConflict) {
 		t.Fatalf("conflict not mapped: %v", err)
+	}
+}
+
+func TestCreateNativeSiteSurfacesHelperOutput(t *testing.T) {
+	previous := PrivilegedCall
+	t.Cleanup(func() { PrivilegedCall = previous })
+	PrivilegedCall = func(_ context.Context, req helper.Request) (string, error) {
+		if req.Action != "create" {
+			return "", errors.New("unexpected action " + req.Action)
+		}
+		// helper 创建站点时会停用发行版默认站点，说明文字随 Output 返回
+		return "已停用发行版默认站点（/etc/nginx/sites-enabled/default）\n", nil
+	}
+	m := &SiteManager{Run: func(context.Context, string, ...string) (string, error) { return "", nil },
+		RunTimeout: func(context.Context, time.Duration, string, ...string) (string, error) { return "", nil }}
+	var notes []string
+	if err := m.createNativeSite(context.Background(), "nginx", "static", "blog", "", 80, "", "",
+		func(s string) { notes = append(notes, s) }); err != nil {
+		t.Fatalf("helper-routed create failed: %v", err)
+	}
+	if len(notes) != 1 || !strings.Contains(notes[0], "已停用") {
+		t.Fatalf("helper note not relayed to task output: %v", notes)
+	}
+}
+
+func TestParseProxyUpstreamsAndWebSocket(t *testing.T) {
+	conf, err := helper.SiteConfEx("nginx", "proxy", "app", "app.example.com", 80, "", helper.ProxyConf{
+		Nodes: []helper.ProxyNode{
+			{Target: "http://10.0.0.1:8080", Weight: 3},
+			{Target: "http://10.0.0.2:8080", Backup: true},
+		},
+		WebSocket: true,
+	}, helper.SSLConf{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	groups := parseNginxUpstreams(conf)
+	if len(groups) != 1 || groups[0].name != "lightpanel-app" {
+		t.Fatalf("upstream group parsed wrong: %+v", groups)
+	}
+	if len(groups[0].servers) != 2 || groups[0].servers[0].Weight != 3 || !groups[0].servers[1].Backup {
+		t.Fatalf("upstream members parsed wrong: %+v", groups[0].servers)
+	}
+	if up := upstreamFor(groups, "http://lightpanel-app"); up == nil || len(up.servers) != 2 {
+		t.Fatalf("proxy_pass not resolved to its upstream: %+v", up)
+	}
+	if up := upstreamFor(groups, "http://other"); up != nil {
+		t.Fatalf("unrelated proxy_pass must not resolve: %+v", up)
+	}
+	servers := parseNginxServers(conf)
+	if len(servers) != 1 || servers[0].proxyPass != "http://lightpanel-app" || !servers[0].proxyWS {
+		t.Fatalf("server block parsed wrong: %+v", servers)
+	}
+	if len(servers[0].ports) != 1 || servers[0].ports[0] != 80 {
+		t.Fatalf("upstream server entries must not leak into listen parsing: %+v", servers[0].ports)
+	}
+}
+
+func TestParseApacheBalancer(t *testing.T) {
+	conf := `# managed by lightpanel — site: app
+<Proxy balancer://lightpanel-app>
+    BalancerMember http://10.0.0.1:8080 loadfactor=3
+    BalancerMember http://10.0.0.2:8080 status=+H
+</Proxy>
+
+<VirtualHost *:80>
+    ServerName app.example.com
+
+    ProxyPreserveHost On
+    ProxyPass / balancer://lightpanel-app/
+    ProxyPassReverse / balancer://lightpanel-app/
+</VirtualHost>
+`
+	vhosts := parseApacheVHosts(conf)
+	if len(vhosts) != 1 {
+		t.Fatalf("want 1 vhost, got %d: %+v", len(vhosts), vhosts)
+	}
+	v := vhosts[0]
+	if v.proxyPass != "balancer://lightpanel-app/" || len(v.proxyNodes) != 2 {
+		t.Fatalf("balancer vhost parsed wrong: %+v", v)
+	}
+	if v.proxyNodes[0].Weight != 3 || !v.proxyNodes[1].Backup {
+		t.Fatalf("balancer members parsed wrong: %+v", v.proxyNodes)
+	}
+}
+
+func TestConfDirSitesProxyNodes(t *testing.T) {
+	dir := t.TempDir()
+	conf, err := helper.SiteConfEx("nginx", "proxy", "app", "app.example.com", 80, "", helper.ProxyConf{
+		Nodes: []helper.ProxyNode{
+			{Target: "http://10.0.0.1:8080", Weight: 2},
+			{Target: "http://10.0.0.2:8080", Backup: true},
+		},
+		WebSocket: true,
+	}, helper.SSLConf{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "app.conf"), []byte(conf), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m := &SiteManager{Run: func(context.Context, string, ...string) (string, error) { return "", nil }}
+	sites := m.confDirSites(context.Background(), []string{dir}, "nginx", true)
+	if len(sites) != 1 {
+		t.Fatalf("want 1 site, got %d", len(sites))
+	}
+	s := sites[0]
+	if s.Kind != "proxy" || len(s.ProxyNodes) != 2 || s.ProxyNodes[0].Weight != 2 || !s.ProxyNodes[1].Backup || !s.WebSocket {
+		t.Fatalf("site proxy topology parsed wrong: %+v", s)
+	}
+	// a plain single-target proxy site round-trips as one node
+	single, err := helper.SiteConf("nginx", "proxy", "api", "api.example.com", 80, "", "http://127.0.0.1:3000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "api.conf"), []byte(single), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sites = m.confDirSites(context.Background(), []string{dir}, "nginx", true)
+	if len(sites) != 2 {
+		t.Fatalf("want 2 sites, got %d", len(sites))
+	}
+	for _, s := range sites {
+		if s.Detail == "api.conf" && (len(s.ProxyNodes) != 1 || s.ProxyNodes[0].Target != "http://127.0.0.1:3000" || s.WebSocket) {
+			t.Fatalf("single-target site parsed wrong: %+v", s)
+		}
+	}
+}
+
+func TestSiteProxyRoutesThroughHelper(t *testing.T) {
+	previous := PrivilegedCall
+	t.Cleanup(func() { PrivilegedCall = previous })
+	var got helper.Request
+	PrivilegedCall = func(_ context.Context, req helper.Request) (string, error) {
+		if req.Action != "proxy-apply" {
+			return "", errors.New("unexpected action " + req.Action)
+		}
+		got = req
+		return "", nil
+	}
+	m := NewCertManager(&SiteManager{
+		Run:        func(context.Context, string, ...string) (string, error) { return "", nil },
+		RunTimeout: func(context.Context, time.Duration, string, ...string) (string, error) { return "", nil },
+	}, nil, certs.NewStore(t.TempDir()))
+	m.loadSite = func(string) (*managedSite, error) {
+		return &managedSite{
+			ID: "/etc/nginx/sites-enabled/app.conf", Engine: "nginx", Kind: "proxy",
+			Domain: "app.example.com", Port: 80, SiteName: "app", ProxyPass: "http://127.0.0.1:3000",
+		}, nil
+	}
+	post := func(form url.Values) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("POST", "/api/sites/proxy", strings.NewReader(form.Encode()))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		w := httptest.NewRecorder()
+		m.SiteProxy(w, r)
+		return w
+	}
+	nodes := `[{"target":"http://10.0.0.1:8080","weight":3},{"target":"http://10.0.0.2:8080","backup":true}]`
+	if w := post(url.Values{"id": {"/etc/nginx/sites-enabled/app.conf"}, "nodes": {nodes}, "websocket": {"true"}}); w.Code != 200 {
+		t.Fatalf("proxy apply failed: %d %s", w.Code, w.Body.String())
+	}
+	if got.Site != "app" || got.Kind != "proxy" || !got.WebSocket ||
+		len(got.ProxyNodes) != 2 || got.ProxyNodes[0].Weight != 3 || !got.ProxyNodes[1].Backup {
+		t.Fatalf("wrong helper request: %+v", got)
+	}
+	// invalid node payloads are refused before any privileged call
+	PrivilegedCall = func(_ context.Context, _ helper.Request) (string, error) {
+		t.Error("helper must not be called for invalid input")
+		return "", nil
+	}
+	for _, bad := range []string{`[]`, `["not-an-object"]`, `[{"target":"ftp://x"}]`} {
+		if w := post(url.Values{"id": {"/etc/nginx/sites-enabled/app.conf"}, "nodes": {bad}}); w.Code != 400 {
+			t.Errorf("invalid nodes %q accepted: %d", bad, w.Code)
+		}
+	}
+	// static sites are refused
+	m.loadSite = func(string) (*managedSite, error) {
+		return &managedSite{ID: "/etc/nginx/sites-enabled/blog.conf", Engine: "nginx", Kind: "static", SiteName: "blog"}, nil
+	}
+	if w := post(url.Values{"id": {"/etc/nginx/sites-enabled/blog.conf"}, "nodes": {`[{"target":"http://a:1"}]`}}); w.Code != 400 {
+		t.Fatalf("static site must be refused: %d", w.Code)
+	}
+}
+
+func TestParseNginxAdvancedSettings(t *testing.T) {
+	dir := t.TempDir()
+	m := &SiteManager{Run: func(context.Context, string, ...string) (string, error) { return "", nil }}
+	write := func(name string, spec helper.SiteSpec) {
+		t.Helper()
+		conf, err := helper.RenderSite(spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(conf), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("multi.conf", helper.SiteSpec{Name: "multi", Engine: "nginx", Kind: "static",
+		Domains: []string{"a.example.com", "b.example.com", "*.c.example.com"},
+		Port: 80, Root: "/var/www/multi", Index: []string{"home.html", "index.htm"}})
+	write("spa.conf", helper.SiteSpec{Name: "spa", Engine: "nginx", Kind: "static",
+		Domains: []string{"spa.example.com"}, Port: 80, Root: "/var/www/spa", Rewrite: "spa"})
+	write("redir.conf", helper.SiteSpec{Name: "redir", Engine: "nginx", Kind: "static",
+		Domains: []string{"old.example.com"}, Port: 80, Root: "/var/www/old",
+		Redirect: &helper.Redirect{Target: "https://new.example.com", Code: 301, KeepPath: true}})
+	write("custom.conf", helper.SiteSpec{Name: "custom", Engine: "nginx", Kind: "static",
+		Domains: []string{"custom.example.com"}, Port: 80, Root: "/var/www/custom",
+		Rewrite: "custom", RewriteBody: "deny 192.0.2.0/24;\ntry_files $uri $uri/ /index.html;"})
+	sites := m.confDirSites(context.Background(), []string{dir}, "nginx", true)
+	byName := map[string]Site{}
+	for _, s := range sites {
+		byName[s.Detail] = s
+	}
+	if len(byName) != 4 {
+		t.Fatalf("want 4 sites, got %d: %v", len(byName), byName)
+	}
+	multi := byName["multi.conf"]
+	if !reflect.DeepEqual(multi.ServerNames, []string{"a.example.com", "b.example.com", "*.c.example.com"}) ||
+		!reflect.DeepEqual(multi.Index, []string{"home.html", "index.htm"}) {
+		t.Fatalf("multi-domain site parsed wrong: %+v", multi)
+	}
+	if spa := byName["spa.conf"]; spa.Rewrite != "spa" || spa.RewriteBody != "" {
+		t.Fatalf("spa preset parsed wrong: %+v", spa)
+	}
+	redir := byName["redir.conf"]
+	if redir.RedirectTarget != "https://new.example.com" || redir.RedirectCode != 301 || !redir.RedirectKeepPath {
+		t.Fatalf("redirect parsed wrong: %+v", redir)
+	}
+	custom := byName["custom.conf"]
+	if custom.Rewrite != "custom" || !strings.Contains(custom.RewriteBody, "deny 192.0.2.0/24;") {
+		t.Fatalf("custom rewrite parsed wrong: %+v", custom)
+	}
+}
+
+func TestParseApacheAdvancedSettings(t *testing.T) {
+	dir := t.TempDir()
+	m := &SiteManager{Run: func(context.Context, string, ...string) (string, error) { return "", nil }}
+	write := func(name string, spec helper.SiteSpec) {
+		t.Helper()
+		conf, err := helper.RenderSite(spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(conf), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("blog.conf", helper.SiteSpec{Name: "blog", Engine: "apache", Kind: "static",
+		Domains: []string{"a.example.com", "b.example.com"}, Port: 80, Root: "/var/www/blog",
+		Index: []string{"home.html"},
+		Redirect: &helper.Redirect{Target: "https://new.example.com", Code: 302}})
+	// 强制 HTTPS 的 RedirectMatch 跳到自己域名，不能被误读为站点重定向
+	write("force.conf", helper.SiteSpec{Name: "force", Engine: "apache", Kind: "static",
+		Domains: []string{"force.example.com"}, Port: 80, Root: "/var/www/force",
+		SSL: helper.SSLConf{Enabled: true, ForceHTTPS: true,
+			CertFile: "/var/lib/lightpanel/acme/certs/force.example.com/cert.pem",
+			KeyFile:  "/var/lib/lightpanel/acme/certs/force.example.com/privkey.pem"}})
+	sites := m.confDirSites(context.Background(), []string{dir}, "apache", true)
+	byName := map[string]Site{}
+	for _, s := range sites {
+		byName[s.Detail] = s
+	}
+	blog := byName["blog.conf"]
+	if !reflect.DeepEqual(blog.ServerNames, []string{"a.example.com", "b.example.com"}) ||
+		!reflect.DeepEqual(blog.Index, []string{"home.html"}) ||
+		blog.RedirectTarget != "https://new.example.com" || blog.RedirectCode != 302 || blog.RedirectKeepPath {
+		t.Fatalf("apache settings parsed wrong: %+v", blog)
+	}
+	force := byName["force.conf"]
+	if force.RedirectTarget != "" {
+		t.Fatalf("force-HTTPS rule must not parse as site redirect: %+v", force)
+	}
+	if !force.SSL {
+		t.Fatalf("SSL flag lost: %+v", force)
+	}
+}
+
+func TestDomainConflicts(t *testing.T) {
+	if !domainOverlap("a.example.com", "A.Example.COM") || domainOverlap("a.example.com", "b.example.com") {
+		t.Fatal("domainOverlap exact match broken")
+	}
+	if !domainOverlap("app.example.com", "*.example.com") || !domainOverlap("*.example.com", "app.example.com") {
+		t.Fatal("domainOverlap wildcard broken")
+	}
+	if domainOverlap("app.example.com", "*.other.com") {
+		t.Fatal("unrelated hosts must not overlap")
+	}
+
+	previous := siteScanDirs
+	t.Cleanup(func() { siteScanDirs = previous })
+	nginxDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(nginxDir, "other.conf"), []byte(
+		helper.ManagedMarker+"\nserver {\n    listen 80;\n    server_name taken.example.com *.taken-wild.com;\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	siteScanDirs = map[string][]string{"nginx": {nginxDir}, "apache": {t.TempDir()}}
+	m := &CertManager{sites: &SiteManager{Run: func(context.Context, string, ...string) (string, error) { return "", nil }}}
+	conflicts := m.domainConflicts(context.Background(), "/etc/nginx/sites-enabled/mine.conf",
+		[]string{"free.example.com", "taken.example.com", "sub.taken-wild.com"})
+	if len(conflicts) != 2 {
+		t.Fatalf("expected 2 conflicts, got %v", conflicts)
+	}
+	if free := m.domainConflicts(context.Background(), "/etc/nginx/sites-enabled/mine.conf", []string{"free.example.com"}); len(free) != 0 {
+		t.Fatalf("free domains must not conflict: %v", free)
+	}
+}
+
+func TestSiteConfRoutesThroughHelper(t *testing.T) {
+	previous := PrivilegedCall
+	previousDirs := siteScanDirs
+	t.Cleanup(func() { PrivilegedCall = previous; siteScanDirs = previousDirs })
+	siteScanDirs = map[string][]string{"nginx": {t.TempDir()}, "apache": {t.TempDir()}}
+	var got helper.Request
+	PrivilegedCall = func(_ context.Context, req helper.Request) (string, error) {
+		if req.Action != "conf-apply" {
+			return "", errors.New("unexpected action " + req.Action)
+		}
+		got = req
+		return "", nil
+	}
+	m := NewCertManager(&SiteManager{
+		Run:        func(context.Context, string, ...string) (string, error) { return "", nil },
+		RunTimeout: func(context.Context, time.Duration, string, ...string) (string, error) { return "", nil },
+	}, nil, certs.NewStore(t.TempDir()))
+	m.loadSite = func(string) (*managedSite, error) {
+		return &managedSite{
+			ID: "/etc/nginx/sites-enabled/blog.conf", Engine: "nginx", Kind: "static",
+			Domain: "blog.example.com", Port: 80, Root: "/var/www/blog", SiteName: "blog",
+			ServerName: "blog.example.com",
+		}, nil
+	}
+	post := func(form url.Values) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("POST", "/api/sites/conf", strings.NewReader(form.Encode()))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		w := httptest.NewRecorder()
+		m.SiteConf(w, r)
+		return w
+	}
+	if w := post(url.Values{
+		"id":                 {"/etc/nginx/sites-enabled/blog.conf"},
+		"domains":            {`["blog.example.com","www.blog.example.com"]`},
+		"index":              {"home.html\nindex.htm"},
+		"redirect_to":        {"https://parked.example.com"},
+		"redirect_code":      {"302"},
+		"redirect_keep_path": {"true"},
+		"rewrite":            {"spa"},
+	}); w.Code != 200 {
+		t.Fatalf("conf apply failed: %d %s", w.Code, w.Body.String())
+	}
+	if len(got.Domains) != 2 || !reflect.DeepEqual(got.Index, []string{"home.html", "index.htm"}) ||
+		got.RedirectTarget != "https://parked.example.com" || got.RedirectCode != 302 || !got.RedirectKeepPath ||
+		got.Rewrite != "spa" {
+		t.Fatalf("wrong helper request: %+v", got)
+	}
+	// 域名被其他站点绑定时拒绝（且不打 helper）
+	scanDir := siteScanDirs["nginx"][0]
+	if err := os.WriteFile(filepath.Join(scanDir, "other.conf"), []byte(
+		helper.ManagedMarker+"\nserver {\n    listen 80;\n    server_name taken.example.com;\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	PrivilegedCall = func(_ context.Context, _ helper.Request) (string, error) {
+		t.Error("helper must not be called when domains conflict")
+		return "", nil
+	}
+	if w := post(url.Values{
+		"id":      {"/etc/nginx/sites-enabled/blog.conf"},
+		"domains": {`["taken.example.com"]`},
+	}); w.Code != 400 {
+		t.Fatalf("conflicting domain must be refused: %d %s", w.Code, w.Body.String())
+	}
+	// 非法域名拒绝
+	if w := post(url.Values{"id": {"/etc/nginx/sites-enabled/blog.conf"}, "domains": {`["bad domain"]`}}); w.Code != 400 {
+		t.Fatalf("invalid domain must be refused: %d", w.Code)
 	}
 }
 

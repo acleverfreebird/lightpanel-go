@@ -60,6 +60,9 @@ func (s *server) site(req *Request) Response {
 	case "ssl-apply":
 		out, err := s.siteSSLApply(req)
 		return respond(out, err)
+	case "proxy-apply":
+		out, err := s.siteProxyApply(req)
+		return respond(out, err)
 	case "challenge-set":
 		return respond("", challengeSet(req.Token, req.Auth))
 	case "challenge-clear":
@@ -68,11 +71,13 @@ func (s *server) site(req *Request) Response {
 	return Response{Error: "unsupported site action"}
 }
 
-// siteSSLApply rewrites a managed site configuration with (or without) an
-// HTTPS server block, guarded by the engine's config test: on failure the
-// previous content is restored so a bad certificate path or directive never
-// leaves the engine unable to reload.
-func (s *server) siteSSLApply(req *Request) (string, error) {
+// siteApply rewrites a managed site configuration from validated request
+// parameters (ssl-apply and proxy-apply share this pipeline): re-render the
+// whole file helper-side, install atomically, guard with the engine's config
+// test (rollback on failure) and reload. The panel never supplies file
+// content, and an existing HTTPS block survives proxy rewrites because the
+// panel resends the current SSL state.
+func (s *server) siteApply(req *Request) (string, error) {
 	engine, name := req.Engine, req.Site
 	if !ValidSiteEngine(engine) || !ValidSiteName(name) {
 		return "", errors.New("engine must be nginx/apache; invalid site name")
@@ -89,10 +94,17 @@ func (s *server) siteSSLApply(req *Request) (string, error) {
 	if kind == "static" && root == "" {
 		root = "/var/www/" + name
 	}
-	if kind == "proxy" && !ValidProxyTarget(req.ProxyTarget) {
-		return "", errors.New("invalid proxy target")
-	}
-	if kind == "static" && !ValidDocumentRoot(root) {
+	proxy := ProxyConf{}
+	if kind == "proxy" {
+		if len(req.ProxyNodes) > 0 {
+			proxy = ProxyConf{Nodes: req.ProxyNodes, WebSocket: req.WebSocket}
+		} else {
+			proxy = ProxyConf{Nodes: []ProxyNode{{Target: req.ProxyTarget}}}
+		}
+		if err := ValidProxyConf(engine, proxy); err != nil {
+			return "", err
+		}
+	} else if !ValidDocumentRoot(root) {
 		return "", errors.New("invalid site root path")
 	}
 	ssl := SSLConf{Enabled: req.SSLOn, ForceHTTPS: req.ForceHTTPS, Challenge: true, CertFile: req.CertFile, KeyFile: req.KeyFile}
@@ -114,12 +126,26 @@ func (s *server) siteSSLApply(req *Request) (string, error) {
 	}
 	current, err := os.ReadFile(confPath)
 	if err != nil {
-		return "", errors.New("site configuration not found; only sites created by lightpanel support one-click SSL")
+		return "", errors.New("site configuration not found; only sites created by lightpanel support one-click settings")
 	}
 	if len(current) > 512<<10 || !bytes.Contains(current, []byte(ManagedMarker)) {
 		return "", errors.New("refusing to rewrite: configuration was not created by lightpanel")
 	}
-	content, err := SiteConfEx(engine, kind, name, req.Domain, port, root, req.ProxyTarget, ssl)
+	domains := req.Domains
+	if len(domains) == 0 && req.Domain != "" {
+		domains = []string{req.Domain}
+	}
+	spec := SiteSpec{
+		Name: name, Engine: engine, Kind: kind, Domains: domains,
+		Port: port, Root: root, Proxy: proxy, SSL: ssl,
+		Index:       req.Index,
+		Rewrite:     req.Rewrite,
+		RewriteBody: req.RewriteBody,
+	}
+	if req.RedirectTarget != "" {
+		spec.Redirect = &Redirect{Target: req.RedirectTarget, Code: req.RedirectCode, KeepPath: req.RedirectKeepPath}
+	}
+	content, err := RenderSite(spec)
 	if err != nil {
 		return "", err
 	}
@@ -132,7 +158,29 @@ func (s *server) siteSSLApply(req *Request) (string, error) {
 		_ = writeConf(confPath, string(current))
 		return TrimOutput(out), fmt.Errorf("configuration test failed, site configuration restored: %w", err)
 	}
-	return siteReload(context.Background(), engine)
+	// 顺带停用仍在占用 80 端口默认槽位的发行版站点，让老版本创建的站点
+	// 在开启 SSL 或调整上游时一并自愈。
+	note := TakeOverDefaultSite(engine, port)
+	out, err := siteReload(context.Background(), engine)
+	if note != "" {
+		out = note + "\n" + out
+	}
+	return out, err
+}
+
+// siteSSLApply keeps the historical entry point of the ssl-apply action.
+func (s *server) siteSSLApply(req *Request) (string, error) {
+	return s.siteApply(req)
+}
+
+// siteProxyApply applies new upstream settings (node list, weights, backups,
+// WebSocket) to a managed reverse-proxy site. SSL state is part of the
+// request, so the re-rendered configuration keeps the existing HTTPS block.
+func (s *server) siteProxyApply(req *Request) (string, error) {
+	if req.Kind != "proxy" {
+		return "", errors.New("proxy-apply only applies to reverse-proxy sites")
+	}
+	return s.siteApply(req)
 }
 
 // configTest runs the engine's syntax check (the same guard the panel
@@ -283,10 +331,15 @@ func (s *server) siteCreate(req *Request) Response {
 			return Response{Error: "cannot enable site: " + err.Error()}
 		}
 	}
-	if out, err := siteReload(context.Background(), engine); err != nil {
-		return Response{OK: true, Output: TrimOutput(out), Error: "site created, but reloading " + engine + " failed: " + err.Error()}
+	// 新站点认领端口 80 前先停用发行版默认站点，否则 default_server 槽位
+	// 仍被它占用，IP 访问永远到不了新站点（站点目录里的 index.html 也就
+	// 看不出变化）。放在配置写成功之后，创建失败不影响现有服务。
+	note := TakeOverDefaultSite(engine, port)
+	out, err := siteReload(context.Background(), engine)
+	if err != nil {
+		return Response{OK: true, Output: TrimOutput(note + "\n" + out), Error: "site created, but reloading " + engine + " failed: " + err.Error()}
 	}
-	return Response{OK: true}
+	return Response{OK: true, Output: note}
 }
 
 // siteDelete removes a managed configuration: the path must sit inside the

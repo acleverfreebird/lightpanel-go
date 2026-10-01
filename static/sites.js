@@ -141,7 +141,9 @@ function openSiteDialog(site) {
     ['监听端口', site.ports.join(', ') || '—'],
   ];
   if (site.root) rows.push(['站点目录', site.root]);
-  if (site.proxy_pass) rows.push(['反代目标', site.proxy_pass]);
+  if (site.proxy_pass) {
+    rows.push(['反代目标', site.proxy_nodes?.length > 1 ? `负载均衡 · ${site.proxy_nodes.length} 个节点` : site.proxy_pass]);
+  }
   if (site.engine !== 'docker') rows.push(['配置文件', site.detail, site.id]);
   rows.push(['来源', site.managed ? 'LightPanel 创建（支持一键 SSL）' : '外部配置（不支持面板改写）']);
   info.replaceChildren(...rows.flatMap(([key, value]) => [el('dt', key), el('dd', value)]));
@@ -152,18 +154,149 @@ function openSiteDialog(site) {
   const deleteButton = $('#site-delete');
   deleteButton.hidden = !site.managed;
   renderSSLPane();
+  renderProxyPane();
+  renderAdvancedPane();
   renderDomainsPane();
   switchPane('site-info-pane');
   $('#site-dialog').showModal();
 }
 
+// ---- 高级设置与域名管理 ----
+//
+// 多域名绑定、默认文档、整站重定向、伪静态：面板从磁盘配置重建当前状态，
+// 叠加表单修改后提交完整 spec（/api/sites/conf），重渲染后各功能互不覆盖。
+
+function nativeEditable(site) {
+  return !!site && (site.engine === 'nginx' || site.engine === 'apache');
+}
+
+function currentDomains(site) {
+  return ((site && site.server_names) || []).filter(n => n && n !== '_');
+}
+
 function renderDomainsPane() {
   const site = selected;
-  const list = $('#site-domains');
-  if (!site) { list.replaceChildren(); return; }
-  const rows = site.server_names.map(name => [name === '_' ? '默认站点（_）' : name,
-    name === '_' ? '未绑定具体域名' : name.startsWith('*.') ? '通配符域名（不支持 SSL 签发）' : '主域名可用']);
-  list.replaceChildren(...rows.flatMap(([key, value]) => [el('dt', key), el('dd', value)]));
+  const tab = $('#site-domains-tab');
+  const list = $('#site-domain-list');
+  const status = $('#site-domains-status');
+  const actions = $('#site-domains-actions');
+  if (!nativeEditable(site)) {
+    tab.hidden = true;
+    list.replaceChildren();
+    return;
+  }
+  tab.hidden = false;
+  status.replaceChildren();
+  actions.hidden = false;
+  if (!site.managed) {
+    status.replaceChildren(el('p', '该站点配置不是由面板创建的，不能在线改写；请通过「文件」编辑站点配置后执行「重载 Web 服务」。', 'notice'));
+    list.replaceChildren();
+    actions.hidden = true;
+    return;
+  }
+  const domains = currentDomains(site);
+  list.replaceChildren(...(domains.length ? domains : ['']).map(domainRow));
+}
+
+function domainRow(value) {
+  const row = el('div', undefined, 'domain-row');
+  const label = el('label', '域名');
+  const input = document.createElement('input');
+  input.name = 'domain';
+  input.spellcheck = false;
+  input.placeholder = 'example.com 或 *.example.com';
+  input.value = value || '';
+  input.setAttribute('aria-label', '域名');
+  label.append(input);
+  row.append(label, action('移除', () => {
+    row.remove();
+    if (!$('#site-domain-list').children.length) $('#site-domain-list').append(domainRow(''));
+  }));
+  return row;
+}
+
+function renderAdvancedPane() {
+  const site = selected;
+  const tab = $('#site-advanced-tab');
+  const form = $('#advanced-form');
+  const status = $('#site-advanced-status');
+  if (!nativeEditable(site)) {
+    tab.hidden = true;
+    form.hidden = true;
+    return;
+  }
+  tab.hidden = false;
+  if (!site.managed) {
+    status.replaceChildren(el('p', '该站点配置不是由面板创建的，不能在线改写；请通过「文件」编辑站点配置。', 'notice'));
+    form.hidden = true;
+    return;
+  }
+  status.replaceChildren();
+  form.hidden = false;
+  form.reset();
+  form.elements.index.value = (site.index || []).join('\n');
+  form.elements.redirect_to.value = site.redirect_target || '';
+  form.elements.redirect_code.value = String(site.redirect_code || 301);
+  form.elements.redirect_keep_path.checked = !!site.redirect_keep_path;
+  const isStatic = site.kind === 'static';
+  const isNginx = site.engine === 'nginx';
+  $('#adv-index-label').hidden = !isStatic;
+  $('#adv-rewrite-label').hidden = !isStatic || !isNginx;
+  $('#adv-rewrite-body-label').hidden = !(isStatic && isNginx && site.rewrite === 'custom');
+  form.elements.rewrite.value = isStatic && isNginx ? (site.rewrite || '') : '';
+  form.elements.rewrite_body.value = site.rewrite_body || '';
+  $('#adv-note').textContent = isNginx
+    ? '默认文档与伪静态仅对静态站点生效；重定向对静态与反向代理站点都生效。保存前会执行配置测试，失败自动回滚。'
+    : 'Apache 站点暂不支持面板内置伪静态（可使用 .htaccess）；默认文档与重定向同样可用。';
+}
+
+async function saveSiteConf(domains) {
+  const site = selected;
+  if (!site) return;
+  if (!nativeEditable(site)) throw new Error('仅 Nginx / Apache 站点支持在线设置。');
+  if (readOnly) throw new Error('当前为只读模式，不能修改服务器。');
+  const form = $('#advanced-form');
+  const data = Object.fromEntries(new FormData(form));
+  const payload = { id: site.id, domains: JSON.stringify(domains) };
+  if (site.kind === 'static') {
+    payload.index = data.index || '';
+    if (site.engine === 'nginx') {
+      payload.rewrite = data.rewrite || '';
+      if (payload.rewrite === 'custom') payload.rewrite_body = data.rewrite_body || '';
+    }
+  }
+  const redirect = (data.redirect_to || '').trim();
+  if (redirect) {
+    if (!/^https?:\/\//.test(redirect)) throw new Error('重定向目标必须以 http:// 或 https:// 开头。');
+    payload.redirect_to = redirect;
+    payload.redirect_code = data.redirect_code || '301';
+    if (data.redirect_keep_path) payload.redirect_keep_path = 'true';
+  }
+  const confirmed = await confirmAction({
+    title: '保存站点设置？',
+    description: '将按提交的域名、默认文档、重定向与伪静态重写站点配置（保留已配置的 HTTPS 与反向代理）并重载 Web 服务；配置错误时自动回滚。',
+    target: `${site.server_names.join(', ')} · ${site.detail}`,
+    confirm: '保存并重载',
+  });
+  if (!confirmed) return;
+  await mutate('/api/sites/conf', payload);
+  message('站点设置已保存并重载 Web 服务。');
+  await sites();
+}
+
+async function saveDomains() {
+  const domains = [...$('#site-domain-list').querySelectorAll('input[name=domain]')]
+    .map(input => input.value.trim().toLowerCase())
+    .filter(v => v);
+  for (const d of domains) {
+    if (!/^[a-z0-9*][a-z0-9.*-]*$/.test(d)) throw new Error(`域名格式不正确：${d}`);
+  }
+  if (new Set(domains).size !== domains.length) throw new Error('域名列表中有重复项。');
+  await saveSiteConf(domains);
+}
+
+function saveAdvanced() {
+  return saveSiteConf(currentDomains(selected));
 }
 
 function renderSSLPane() {
@@ -254,6 +387,101 @@ async function disableSSL() {
   if ($('#site-dialog').open) { renderSSLPane(); }
 }
 
+// ---- 反向代理设置 ----
+//
+// 多节点负载均衡与 WebSocket 透传：仅面板创建的反向代理站点支持，保存时
+// 由后端按新的上游列表重写配置（保留已有 HTTPS）并重载 Web 服务。
+
+function renderProxyPane() {
+  const site = selected;
+  const tab = $('#site-proxy-tab');
+  const list = $('#proxy-node-list');
+  const status = $('#site-proxy-status');
+  const form = $('#proxy-form');
+  if (!site || site.engine === 'docker' || site.kind !== 'proxy') {
+    tab.hidden = true;
+    list.replaceChildren();
+    return;
+  }
+  tab.hidden = false;
+  if (!site.managed) {
+    status.replaceChildren(el('p', '该站点配置不是由面板创建的，不能在线调整上游设置；请通过「文件」编辑站点配置后执行「重载 Web 服务」。', 'notice'));
+    form.hidden = true;
+    return;
+  }
+  status.replaceChildren();
+  form.hidden = false;
+  const nodes = site.proxy_nodes?.length ? site.proxy_nodes : [{ target: site.proxy_pass }];
+  list.replaceChildren(...nodes.filter(n => n.target).map(node => proxyNodeRow(node)));
+  if (!list.children.length) list.replaceChildren(proxyNodeRow({}));
+  $('#proxy-ws-label').hidden = site.engine !== 'nginx';
+  $('#proxy-ws-label input').checked = !!site.websocket;
+  $('#proxy-note').textContent = site.engine === 'apache'
+    ? '多节点负载均衡会生成 <Proxy balancer://> 组（需要 mod_proxy 与 mod_proxy_balancer）；WebSocket 透传仅 Nginx 支持。'
+    : '多节点会生成 Nginx upstream 负载均衡组并按权重分流；WebSocket 透传自动处理连接升级（proxy_http_version 1.1 + Upgrade 头）。';
+}
+
+function proxyNodeRow(node) {
+  const row = el('div', undefined, 'proxy-node-row');
+  const targetLabel = el('label', '节点地址');
+  const target = document.createElement('input');
+  target.name = 'proxy_target';
+  target.required = true;
+  target.spellcheck = false;
+  target.placeholder = 'http://10.0.0.1:8080';
+  target.value = node.target || '';
+  target.setAttribute('aria-label', '节点地址');
+  targetLabel.append(target);
+  const optsLabel = el('label', '权重 / 备用');
+  const opts = el('div', undefined, 'proxy-node-opts');
+  const weight = document.createElement('input');
+  weight.type = 'number';
+  weight.min = '1';
+  weight.max = '100';
+  weight.placeholder = '默认';
+  weight.value = node.weight > 1 ? String(node.weight) : '';
+  weight.setAttribute('aria-label', '权重');
+  const backupLabel = el('label', '备用', 'toggle-label');
+  const backup = document.createElement('input');
+  backup.type = 'checkbox';
+  backup.checked = !!node.backup;
+  backup.setAttribute('aria-label', '备用节点');
+  backupLabel.append(backup, document.createTextNode('备用'));
+  opts.append(weight, backupLabel);
+  optsLabel.append(opts);
+  row.append(targetLabel, optsLabel, action('移除', () => {
+    row.remove();
+    if (!$('#proxy-node-list').children.length) $('#proxy-node-list').append(proxyNodeRow({}));
+  }));
+  return row;
+}
+
+async function saveProxySettings() {
+  const site = selected;
+  if (!site) return;
+  if (site.engine !== 'nginx' && site.engine !== 'apache') throw new Error('仅 Nginx / Apache 反向代理站点支持上游设置。');
+  const nodes = [...$('#proxy-node-list').children].map(row => ({
+    target: (row.querySelector('input[name=proxy_target]')?.value || '').trim(),
+    weight: parseInt(row.querySelector('input[type=number]')?.value, 10) || 0,
+    backup: !!row.querySelector('input[type=checkbox]')?.checked,
+  })).filter(n => n.target);
+  if (!nodes.length) throw new Error('至少保留一个上游节点。');
+  for (const n of nodes) {
+    if (!/^https?:\/\//.test(n.target)) throw new Error(`节点地址必须以 http:// 或 https:// 开头：${n.target}`);
+  }
+  const websocket = site.engine === 'nginx' && $('#proxy-ws-label input').checked;
+  const confirmed = await confirmAction({
+    title: '保存反向代理设置？',
+    description: `将按 ${nodes.length} 个上游节点重写站点配置（保留已配置的 HTTPS 与证书）并重载 ${engineNames[site.engine]}；配置错误时自动回滚。`,
+    target: `${site.server_names.join(', ')} · ${site.detail}`,
+    confirm: '保存并重载',
+  });
+  if (!confirmed) return;
+  await mutate('/api/sites/proxy', { id: site.id, nodes: JSON.stringify(nodes), websocket: websocket ? 'true' : '' });
+  message('反向代理设置已保存并重载 Web 服务。');
+  await sites();
+}
+
 async function loadCerts() {
   const request = ++certVersion;
   const data = await api('/api/sites/certs');
@@ -274,6 +502,8 @@ export async function sites() {
   if ($('#site-dialog').open && selected) {
     selected = items.find(item => item.id === selected.id) || selected;
     renderSSLPane();
+    renderProxyPane();
+    renderAdvancedPane();
     renderDomainsPane();
   }
 }
@@ -330,6 +560,14 @@ export function setupSites(navigate) {
   $('#site-delete').addEventListener('click', () => removeSite(selected));
   $('#ssl-form').addEventListener('submit', guard(issueCert));
   $('#ssl-off').addEventListener('click', guard(disableSSL));
+  $('#proxy-form').addEventListener('submit', guard(saveProxySettings));
+  $('#proxy-add-node').addEventListener('click', () => $('#proxy-node-list').append(proxyNodeRow({})));
+  $('#advanced-form').addEventListener('submit', guard(saveAdvanced));
+  $('#advanced-form [name=rewrite]').addEventListener('change', () => {
+    $('#adv-rewrite-body-label').hidden = $('#advanced-form [name=rewrite]').value !== 'custom';
+  });
+  $('#site-domain-add').addEventListener('click', () => $('#site-domain-list').append(domainRow('')));
+  $('#site-domain-save').addEventListener('click', guard(saveDomains));
   window.addEventListener('task-finished', event => {
     const kind = event.detail?.kind;
     if (kind !== 'issue-cert') return;
