@@ -2,7 +2,7 @@ import { $, api, el, message } from './ui.js';
 import { size, percent, duration } from './format.js';
 import { icon } from './icons.js';
 
-const COLORS = { cpu: '#20a53a', memory: '#3b82d8', disk: '#e6a23c', net: '#7b5cd6' };
+const COLORS = { cpu: '#14846e', memory: '#6585c3', disk: '#c38a3f', net: '#8873b7' };
 const samples = [];
 let version = 0;
 let cards = null;
@@ -53,7 +53,7 @@ function ensureCards() {
   cards = [
     buildCard({ label: 'CPU 使用率', symbolName: 'cpu', color: COLORS.cpu, gauge: true }),
     buildCard({ label: '内存使用', symbolName: 'memory', color: COLORS.memory, gauge: true }),
-    buildCard({ label: '根分区磁盘', symbolName: 'disk', color: COLORS.disk, gauge: true }),
+    buildCard({ label: '磁盘使用', symbolName: 'disk', color: COLORS.disk, gauge: true }),
     buildCard({ label: '网络接收', symbolName: 'network', color: COLORS.net, gauge: false }),
   ];
   $('#metrics').replaceChildren(...cards.map(part => part.card));
@@ -81,7 +81,7 @@ export async function overview() {
   $('#host-subtitle').textContent = `${m.os} · 已运行 ${duration(m.uptime)}`;
 
   cpuCard.value.textContent = cpu === null ? '采样中' : percentage(cpu);
-  cpuCard.detail.textContent = '每 3 秒更新 · 采样间隔平均值';
+  cpuCard.detail.textContent = '采样间隔内的平均使用率';
   setGauge(cpuCard, cpu);
 
   memoryCard.value.textContent = percentage(memory);
@@ -94,7 +94,7 @@ export async function overview() {
 
   networkCard.value.textContent = m.sample_ready ? `${size(m.rx_bytes_per_sec)}/s` : '采样中';
   networkCard.detail.textContent = m.sample_ready ? `↑ 发送 ${size(m.tx_bytes_per_sec)}/s` : '等待有效采样';
-  networkCard.foot.textContent = '↓ 接收 / ↑ 发送 · 所有非回环接口';
+  networkCard.foot.textContent = '所有非回环网络接口';
 
   const errors = m.errors || [];
   const high = [cpu, memory, disk].some(value => value !== null && value >= 85);
@@ -147,8 +147,8 @@ function drawChart() {
           ctx.lineTo(points[0][0], bottom);
           ctx.closePath();
           const grad = ctx.createLinearGradient(0, top, 0, bottom);
-          grad.addColorStop(0, 'rgba(32,165,58,.18)');
-          grad.addColorStop(1, 'rgba(32,165,58,0)');
+          grad.addColorStop(0, 'rgba(20,132,110,.16)');
+          grad.addColorStop(1, 'rgba(20,132,110,0)');
           ctx.fillStyle = grad;
           ctx.fill();
         }

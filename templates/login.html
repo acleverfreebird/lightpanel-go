@@ -9,38 +9,33 @@
 </head>
 <body class="login">
   <section class="login-story" aria-label="LightPanel 服务器工作台">
-    <a class="brand" href="/login"><span class="brand-mark" aria-hidden="true"></span><span class="brand-text">LightPanel<small>宝塔式管理面板</small></span></a>
+    <a class="brand" href="/login"><span class="brand-mark" aria-hidden="true"></span><span class="brand-text">LightPanel<small>SERVER WORKSPACE</small></span></a>
     <div class="story-content">
-      <div class="eyebrow">LESS OVERHEAD. MORE CONTROL.</div>
-      <h1>轻一点，<br>掌控多一点<span>。</span></h1>
-      <p>让复杂的运维，回归简单。<br>你的服务器、应用与数据，尽在一个清晰的工作台。</p>
-      <div class="server-art" aria-hidden="true">
-        <div class="orbit orbit-one"></div><div class="orbit orbit-two"></div>
-        <div class="art-caption">YOUR INFRASTRUCTURE, IN FOCUS.</div>
-        <div class="server-stack">
-          <div class="server-unit"><span class="unit-number">01</span><i></i><i></i><i></i><b></b></div>
-          <div class="server-unit"><span class="unit-number">02</span><i></i><i></i><i></i><b></b></div>
-          <div class="server-unit"><span class="unit-number">03</span><i></i><i></i><i></i><b></b></div>
-        </div>
-        <div class="art-label"><span></span> BUILT TO RUN LIGHT.</div>
+      <div class="story-kicker"><span></span> 为每一次从容管理而设计</div>
+      <h1>掌控复杂，<br>保持简单<span>。</span></h1>
+      <p>服务器、应用与数据，在一个清晰的工作空间。<br>让你专注于业务，把繁琐留给 LightPanel。</p>
+      <div class="infra-art" aria-hidden="true">
+        <div class="infra-grid"></div>
+        <div class="infra-label">YOUR INFRASTRUCTURE. CONNECTED.</div>
+        <svg class="infra-lines" viewBox="0 0 400 250"><path d="M200 80v40H70v60 M200 120v60 M200 120h130v60"/></svg>
+        <div class="infra-core"><span class="brand-mark"></span><div><strong>LightPanel</strong><small>ONE CLEAR WORKSPACE</small></div><span class="infra-status"></span></div>
+        <div class="infra-nodes"><div><svg class="icon" viewBox="0 0 24 24"><path d="M3 5h18v14H3z M3 9h18 M7 13h4 M7 16h7"/></svg><span>应用部署</span></div><div><svg class="icon" viewBox="0 0 24 24"><path d="M4 6c0-4 16-4 16 0s-16 4-16 0 M4 6v12c0 4 16 4 16 0V6 M4 12c0 4 16 4 16 0"/></svg><span>数据管理</span></div><div><svg class="icon" viewBox="0 0 24 24"><path d="M12 3l8 3v6c0 5-8 9-8 9S4 17 4 12V6z M8 12l3 3 5-6"/></svg><span>安全运维</span></div></div>
       </div>
     </div>
-    <div class="story-footer"><span>轻量架构</span><span>清晰洞察</span><span>从容管理</span></div>
+    <div class="story-footer"><span>轻量架构</span><span>统一管理</span><span>清晰洞察</span></div>
   </section>
   <main class="login-main">
     <div class="login-card">
-      <div class="login-step"><span></span> YOUR WORKSPACE</div>
-      <h2>欢迎回来<span>。</span></h2>
-      <p class="muted">登录 LightPanel，开始今天的管理。</p>
+      <div class="login-symbol" aria-hidden="true"><svg class="icon" viewBox="0 0 24 24"><path d="M6 11h12v9H6z M8 11V7a4 4 0 0 1 8 0v4 M12 15v2"/></svg></div>
+      <div class="eyebrow">WELCOME TO YOUR WORKSPACE</div>
+      <h2>欢迎回来</h2>
+      <p class="login-description">登录你的工作台，让一切井然有序。</p>
       <form method="post" action="/login">
-        <label>管理员账号<input name="username" autocomplete="username" required maxlength="128" placeholder="输入用户名" autofocus></label>
-        <label>登录密码<input name="password" type="password" autocomplete="current-password" required maxlength="72" placeholder="输入密码"></label>
-        <button type="submit">进入工作台 <span aria-hidden="true">→</span></button>
+        <label>管理员账号<input name="username" autocomplete="username" required maxlength="128" placeholder="输入管理员账号" autofocus></label>
+        <label>登录密码<input name="password" type="password" autocomplete="current-password" required maxlength="72" placeholder="输入登录密码"></label>
+        <button type="submit">登录工作台 <span aria-hidden="true">→</span></button>
       </form>
-      <div class="login-note">
-        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 3v6c0 5-8 9-8 9S4 17 4 12V6z M8 12l3 3 5-6"/></svg>
-        <p>仅限授权管理员访问。<br>请通过可信连接登录你的服务器。</p>
-      </div>
+      <div class="login-note"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 3v6c0 5-8 9-8 9S4 17 4 12V6z M8 12l3 3 5-6"/></svg><p>仅限授权管理员访问<br><span>请通过可信连接登录你的服务器</span></p></div>
     </div>
     <footer class="login-footer"><span>LightPanel</span><span>专注管理，轻装运行。</span></footer>
   </main>

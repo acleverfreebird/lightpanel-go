@@ -11,6 +11,7 @@ import { setupTasks } from './tasks.js';
 import { setupUpdate } from './update.js';
 import { hydrateIcons } from './icons.js';
 import { setupTerminal } from './terminal.js';
+import { setupShell } from './shell.js';
 
 hydrateIcons();
 
@@ -24,7 +25,7 @@ const pageKickers = {
 
 const pages = {
   terminal: ['终端', '打开即连的服务器终端，与本地 Shell 体验一致。', () => terminal.activate()],
-  overview: ['首页', '掌握资源使用情况，让每一次运维都有据可循。', () => Promise.all([overview(), diagnostics()])],
+  overview: ['工作台', '从全局到细节，掌握服务器的每一刻。', () => Promise.all([overview(), diagnostics()])],
   processes: ['进程管理', '定位资源占用，安全地管理正在运行的进程。', processes],
   services: ['系统服务', '快速筛选服务状态，查看详情并执行维护操作。', services],
   apps: ['应用商店', '一键安装网页服务器与配套组件，部署环境一步到位。', apps],
@@ -98,6 +99,7 @@ $('#refresh').addEventListener('click', guard(() => { message(''); return refres
 $('#message-close').addEventListener('click', () => message(''));
 setupProcesses(); setupServices(go); setupFiles(); setupTools(); setupApps(); setupSites(go); setupDatabases(); setupUpdate(); setupTasks();
 const terminal = setupTerminal();
+setupShell(pages, go);
 if (readOnly) document.querySelectorAll('[data-mutation]').forEach(control => { control.disabled = true; control.title = '当前账号只有查看权限'; });
 $('#auto-refresh').addEventListener('change', () => { if ($('#auto-refresh').checked && current === 'overview') refresh(); });
 setInterval(() => { if (!document.hidden && current === 'overview' && $('#auto-refresh').checked) refresh(); }, 3000);

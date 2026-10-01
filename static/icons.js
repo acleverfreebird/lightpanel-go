@@ -1,5 +1,7 @@
 // Small, local icon vocabulary. No fonts, network requests or HTML injection.
 const paths = {
+  menu: 'M4 6h16 M4 12h16 M4 18h16',
+  close: 'M6 6l12 12 M6 18L18 6',
   home: 'M4 11l8-7 8 7 M6 10v10h12V10 M10 20v-6h4v6',
   processes: 'M3 12h4l3-8 4 16 3-8h4',
   services: 'M4 4h16v6H4z M4 14h16v6H4z M7 7h.01 M7 17h.01 M15 7h2 M15 17h2',
