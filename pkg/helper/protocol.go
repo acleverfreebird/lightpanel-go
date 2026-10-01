@@ -23,6 +23,7 @@ const (
 	OpApp            = "app"             // install or remove a catalog app via the system package manager, gated by allow_apps
 	OpDatabase       = "database"        // managed database operations, gated by allow_databases
 	OpTerminal       = "terminal"        // relay one root web-terminal PTY, gated by allow_terminal
+	OpFile           = "file"            // whole-filesystem file management as root, gated by allow_files
 	OpHello          = "hello"           // protocol handshake; no ACL, returns ProtocolVersion
 )
 
@@ -39,7 +40,10 @@ const (
 // v4: database actions extended with one-step provisioning (create-db gains
 // user/password/charset/host), backups (backup / backup-list / backup-restore
 // / backup-delete) and the SQL console (query).
-const ProtocolVersion = 4
+// v5: new file operation: the whole file manager (browse, download, upload,
+// edit, mkdir, rename, delete, chmod) executes as root through the helper,
+// so an unprivileged panel no longer fails on root-owned files with 403.
+const ProtocolVersion = 5
 
 // Relay framing for OpTerminal. After the helper answers the terminal request
 // with an OK Response, the connection stops speaking JSON: the panel sends
@@ -48,12 +52,38 @@ const ProtocolVersion = 4
 // connection closes (EOF on the panel side). Every frame is 1 type byte, a
 // uint32-BE payload length and the payload.
 const (
-	// FrameInput carries raw keystrokes.
+	// FrameInput carries raw keystrokes. File-content relays reuse it for
+	// upload/save body chunks (panel→helper only).
 	FrameInput = 0x01
 	// FrameResize resizes the PTY; its payload is rows and cols as two
-	// uint16-BE integers.
+	// uint16-BE integers. File relays reject it.
 	FrameResize = 0x02
+	// FrameCommit ends a file upload/save relay: on receipt the helper
+	// finalizes (fsync, rename into place) and answers with the final JSON
+	// Response. A connection that ends without FrameCommit aborts the
+	// transfer and removes the temporary file, so an interrupted panel can
+	// never leave a truncated file behind.
+	FrameCommit = 0x03
 )
+
+// WriteCommitFrame sends the end-of-transfer marker of a file relay.
+func WriteCommitFrame(w io.Writer) error {
+	return writeFrame(w, FrameCommit, nil)
+}
+
+// FileEntry is one directory-listing row. The helper marshals the listing
+// directly into the response body, so this struct defines the on-the-wire
+// (and browser-facing) JSON for both helper and panel modes.
+type FileEntry struct {
+	Name     string `json:"name"`
+	Path     string `json:"path"`
+	IsDir    bool   `json:"is_dir"`
+	Regular  bool   `json:"regular"`
+	Symlink  bool   `json:"symlink"`
+	Size     int64  `json:"size"`
+	Mode     string `json:"mode"`
+	Modified int64  `json:"modified"`
+}
 
 // WriteInputFrame sends one keystroke batch to the relay.
 func WriteInputFrame(w io.Writer, data []byte) error {
@@ -145,6 +175,37 @@ var dbActions = map[string]bool{
 // ValidDBAction reports whether action is a helper-permitted database operation.
 func ValidDBAction(action string) bool { return dbActions[action] }
 
+// File actions for OpFile. Every action carries only validated absolute
+// paths; the helper re-validates them and re-derives all syscall arguments,
+// exactly like sites/apps/databases rebuild their argv. list/read/mkdir/
+// rename/delete/chmod are ordinary request/response calls; fetch/store/save
+// switch the connection to a content relay after the handshake (see
+// FrameCommit and Client.Relay).
+var fileActions = map[string]bool{
+	"list":   true, // directory listing as the JSON response body
+	"read":   true, // editor read: UTF-8 text up to MaxEditBytes, JSON response body
+	"fetch":  true, // download: relay streams the regular file's raw bytes
+	"store":  true, // upload: relay receives raw bytes, never overwrites (O_EXCL)
+	"save":   true, // editor save: relay receives bytes, atomic tmp+rename preserving owner/mode
+	"mkdir":  true, // MkdirAll semantics
+	"rename": true, // renameat2 RENAME_NOREPLACE from Path to To
+	"delete": true, // remove, or RemoveAll when Recursive is set
+	"chmod":  true, // three octal digits in Mode, regular files and directories only
+}
+
+// ValidFileAction reports whether action is a helper-permitted file operation.
+func ValidFileAction(action string) bool { return fileActions[action] }
+
+// IsFileRelayAction reports whether the file action transfers content over
+// the relayed connection instead of the one-shot JSON exchange.
+func IsFileRelayAction(action string) bool {
+	return action == "fetch" || action == "store" || action == "save"
+}
+
+// MaxEditBytes is the online editor's size cap, shared by the panel (which
+// caps the request body) and the helper (which enforces it independently).
+const MaxEditBytes = 1 << 20
+
 // Request is one privileged operation. Fields not relevant to Op are ignored.
 type Request struct {
 	Op        string `json:"op"`
@@ -197,6 +258,13 @@ type Request struct {
 	// SQL console: one batch of statements for the named database. Size-capped
 	// and fed to the client over stdin.
 	SQL string `json:"sql,omitempty"`
+	// OpFile fields. Path/To are absolute validated paths (To is the rename
+	// destination). Offset paginates the listing; Recursive switches delete to
+	// RemoveAll; Mode is the three-octal-digit chmod target (no setuid/setgid).
+	To        string `json:"to,omitempty"`
+	Offset    int    `json:"offset,omitempty"`
+	Recursive bool   `json:"recursive,omitempty"`
+	Mode      uint32 `json:"mode,omitempty"`
 }
 
 // Response is the helper's verdict. OK=false carries a human-readable Error
@@ -208,6 +276,11 @@ type Response struct {
 	// Version is the helper's protocol version, set on every response.
 	// Absent (0) means the helper predates the handshake entirely.
 	Version int `json:"version,omitempty"`
+	// Code is an HTTP-style status hint for OpFile failures (404 not found,
+	// 403 permission, 409 exists, 413 too large, 400 invalid). The panel maps
+	// it onto its own fileError statuses so the browser sees the same codes as
+	// in direct-execution mode. Zero means "no hint": callers fall back to 502.
+	Code int `json:"code,omitempty"`
 }
 
 // ErrHelper is wrapped into every failure returned to the panel so callers

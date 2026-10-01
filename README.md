@@ -25,7 +25,9 @@ pkg/sysinfo/command.go       固定工具路径、超时和输出上限
 pkg/sysinfo/metrics.go       CPU/内存/磁盘/网络/负载/运行时间
 pkg/sysinfo/process.go       /proc 进程搜索、分页、pidfd 信号
 pkg/sysinfo/service.go       systemd 列表/状态/启停/重启
-pkg/sysinfo/filemanager.go   全盘文件浏览/上传/下载/新建/重命名/编辑/递归删除/chmod
+pkg/sysinfo/filemanager.go   全盘文件浏览/上传/下载/新建/重命名/编辑/递归删除/chmod（面板入口，root 面板直连执行）
+pkg/sysinfo/filemanager_remote.go 非 root 面板的文件操作转发（helper 中继：列表/读取 JSON 直传，下载/上传/保存流式）
+pkg/helper/files_linux.go    helper 端 root 文件操作执行体（路径复验、虚拟目录保护、流式中继与提交帧）
 pkg/sysinfo/update.go        检查 GitHub Release、校验 SHA256、替换二进制并重启服务
 pkg/sysinfo/logs.go          journalctl 系统与服务日志
 pkg/sysinfo/firewall.go      UFW/firewalld 状态和端口规则
@@ -59,9 +61,9 @@ docs/SSL.md                  一键 SSL（内置 ACME）实现、存储布局与
 
 ### MVP 范围
 
-已实现：系统概览（指标趋势、主机信息、运行诊断、快捷入口）、进程搜索/分页/结束、systemd 服务管理（已加载与已安装单元、启停/重启/重载/开机自启）、全盘文件浏览/上传/下载/新建文件夹/重命名/在线编辑/递归删除/权限、版本检查与一键更新、单管理员登录和可选只读权限、系统/服务日志、防火墙端口规则、网站管理（宝塔式布局：站点表格 + 设置弹窗；自动识别 Nginx/Apache/Docker，浏览已配置站点，创建静态站点、反向代理或 Docker 容器部署，受控删除与重载；内置 ACME 客户端一键申请 Let's Encrypt 证书——不需要 certbot 等任何外部工具，支持强制 HTTPS、到期前 30 天自动续期与 Staging 测试证书）、应用商店（通过系统软件包管理器一键安装/卸载 Nginx/Apache/Docker/MySQL/MariaDB/PostgreSQL/Redis，安装与卸载均为后台任务并可查看进度与输出）、数据库管理（自动识别 MySQL/MariaDB/PostgreSQL/Redis；宝塔式数据库表格：搜索、字符集、容量、账号与密码查看/复制；一步建库=建库+建号+授权+字符集+访问来源选择，凭据备忘保存在面板状态目录；每库备份中心：后台备份/恢复/下载/删除备份，流式 gzip 存放于 /var/backups/lightpanel/databases；内置 SQL 控制台直接对库执行语句并表格化展示结果；创建用户与修改密码，引擎启停）。终端（Web Terminal）为宝塔风格的网页终端：侧栏打开即连，整页控制台（内置 xterm.js + 真 PTY，支持 vim/top、窗口自适应与 5000 行回滚），进入即 **root 登录 shell**（root 面板本地派生，非 root 面板经 helper 中继），复用面板登录会话，跨源握手拒绝、退出登录即时撤销并保留生命周期审计；详见 [终端](docs/WEB-TERMINAL.md)。
+已实现：系统概览（指标趋势、主机信息、运行诊断、快捷入口）、进程搜索/分页/结束、systemd 服务管理（已加载与已安装单元、启停/重启/重载/开机自启）、全盘文件浏览/上传/下载/新建文件夹/重命名/在线编辑/递归删除/权限（非 root 面板经 helper 以 root 执行，宝塔式全盘文件管理）、版本检查与一键更新、单管理员登录和可选只读权限、系统/服务日志、防火墙端口规则、网站管理（宝塔式布局：站点表格 + 设置弹窗；自动识别 Nginx/Apache/Docker，浏览已配置站点，创建静态站点、反向代理或 Docker 容器部署，受控删除与重载；内置 ACME 客户端一键申请 Let's Encrypt 证书——不需要 certbot 等任何外部工具，支持强制 HTTPS、到期前 30 天自动续期与 Staging 测试证书）、应用商店（通过系统软件包管理器一键安装/卸载 Nginx/Apache/Docker/MySQL/MariaDB/PostgreSQL/Redis，安装与卸载均为后台任务并可查看进度与输出）、数据库管理（自动识别 MySQL/MariaDB/PostgreSQL/Redis；宝塔式数据库表格：搜索、字符集、容量、账号与密码查看/复制；一步建库=建库+建号+授权+字符集+访问来源选择，凭据备忘保存在面板状态目录；每库备份中心：后台备份/恢复/下载/删除备份，流式 gzip 存放于 /var/backups/lightpanel/databases；内置 SQL 控制台直接对库执行语句并表格化展示结果；创建用户与修改密码，引擎启停）。终端（Web Terminal）为宝塔风格的网页终端：侧栏打开即连，整页控制台（内置 xterm.js + 真 PTY，支持 vim/top、窗口自适应与 5000 行回滚），进入即 **root 登录 shell**（root 面板本地派生，非 root 面板经 helper 中继），复用面板登录会话，跨源握手拒绝、退出登录即时撤销并保留生命周期审计；详见 [终端](docs/WEB-TERMINAL.md)。
 
-安全边界：这是有权限的主机管理工具，不是多租户容器。文件管理面向**整个文件系统**：所有接口只接受绝对路径，`..` 组件、反斜杠与 NUL 一律拒绝；`/proc`、`/sys`、`/dev`、`/run` 这四个虚拟系统目录拒绝删除与移动。下载/编辑读取只接受普通文件（符号链接若最终指向普通文件也可下载）；chmod 只接受普通文件与目录，且拒绝 setuid/setgid 与符号链接；只允许普通文件上传，禁止覆盖；目录删除默认要求为空，带 `recursive=true` 时递归删除且不允许删除根；在线编辑只处理 ≤1 MiB 且不含 NUL 的普通文件，保存先写临时文件再原子替换，且拒绝以符号链接为目标的写入。进程以 root 运行时这些接口等同 root 文件权限；默认的最小特权模式下面板以专用非特权用户 `lightpanel` 运行（见「最小特权 helper」），文件接口仅等同该用户权限。无论哪种模式，请务必启用 TLS/反代并保管好管理员密码。
+安全边界：这是有权限的主机管理工具，不是多租户容器。文件管理面向**整个文件系统**：所有接口只接受绝对路径，`..` 组件、反斜杠与 NUL 一律拒绝；`/proc`、`/sys`、`/dev`、`/run` 这四个虚拟系统目录拒绝删除与移动。下载/编辑读取只接受普通文件（符号链接若最终指向普通文件也可下载）；chmod 只接受普通文件与目录，且拒绝 setuid/setgid 与符号链接；只允许普通文件上传，禁止覆盖；目录删除默认要求为空，带 `recursive=true` 时递归删除且不允许删除根；在线编辑只处理 ≤1 MiB 且不含 NUL 的普通文件，保存先写临时文件再原子替换，且拒绝以符号链接为目标的写入。非 root 面板的这些接口经 helper 以 root 权限执行（`allow_files`，见「最小特权 helper」），root 面板则直接执行；无论哪种模式，请务必启用 TLS/反代并保管好管理员密码。
 
 ## 2. 核心数据流与接口设计
 
@@ -87,7 +89,7 @@ API 默认必须登录。页面 `GET /` 未登录时跳转到 `/login`；API 返
 | GET | `/api/services` | 不带 `name` 列出已加载与已安装（`list-unit-files` 合并）的服务；带 `.service` 名返回详情 |
 | POST | `/api/service/action` | `name,action=start或stop或restart或reload或enable或disable`；enable/disable 仅改开机启动配置 |
 | GET | `/api/files` | `path=/` 绝对路径，`offset=0`；每页最多 200 条，条目含 `modified`（Unix 秒）与 `symlink` 标记 |
-| GET | `/api/file/download` | `path`；流式附件下载，支持 Range |
+| GET | `/api/file/download` | `path`；流式附件下载（root 面板模式支持 Range；helper 模式为整文件流式下载，Content-Length 校验完整性） |
 | POST | `/api/file/upload?path=...` | 请求体是文件原始字节，非 multipart；上限 `max_upload_mb`（默认 32 MiB），禁止覆盖 |
 | GET | `/api/file/read` | `path`；读取 ≤1 MiB 文本文件内容用于编辑，含 NUL 或超限返回 400 |
 | POST | `/api/file/write?path=...` | 请求体是新内容（≤1 MiB）；先写临时文件再原子替换，拒绝符号链接目标 |
@@ -305,7 +307,7 @@ sudo journalctl -u lightpanel -n 100 --no-pager
 
 面板进程不需要任何 Linux capability；日志读取（journalctl）需要 `systemd-journal` 组（单元中已声明 `SupplementaryGroups=systemd-journal`，无该组的系统可删除此行，代价是日志页返回错误）。需要旧版 root 面板行为时把单元 `User` 改回 root（或用 `--legacy-root` 安装），此时 `[helper]` 不参与。
 
-单元启用 `NoNewPrivileges`、内核参数保护等约束。文件管理需要访问运行用户可读写的整个文件系统，因此面板单元不启用 `ProtectSystem`/`ProtectHome`/`PrivateTmp`/`ReadWritePaths` 等文件系统隔离；`/proc`、`/sys`、`/dev`、`/run` 的删除与重命名由面板自身拒绝。helper 单元也不启用文件系统写隔离与 `RestrictSUIDSGID`：它会派生系统包管理器（应用商店）并写入站点与证书状态，子进程完整继承单元沙箱，`ProtectSystem=strict` 会让 `/var/lib/apt` 只读、`RestrictSUIDSGID` 会拦截 apt 降权到 `_apt` 用户的 `setresuid`，二者均使安装必然失败；helper 的特权收敛依赖白名单 argv（应用名/包名/站点配置全部由 helper 端目录重建），`NoNewPrivileges`、`PrivateTmp` 与内核防护项保留。
+单元启用 `NoNewPrivileges`、内核参数保护等约束。文件管理经 helper 以 root 执行后，面板自身只需读写其状态/日志/更新暂存目录，但下载/上传/编辑的文件内容仍流经面板进程转发，如需进一步收紧可结合实际部署路径启用 `ProtectSystem`/`ReadWritePaths` 等隔离；`/proc`、`/sys`、`/dev`、`/run` 的删除与重命名由面板与 helper 双侧拒绝。helper 单元也不启用文件系统写隔离与 `RestrictSUIDSGID`：它会派生系统包管理器（应用商店）并写入站点与证书状态，子进程完整继承单元沙箱，`ProtectSystem=strict` 会让 `/var/lib/apt` 只读、`RestrictSUIDSGID` 会拦截 apt 降权到 `_apt` 用户的 `setresuid`，二者均使安装必然失败；helper 的特权收敛依赖白名单 argv（应用名/包名/站点配置全部由 helper 端目录重建），`NoNewPrivileges`、`PrivateTmp` 与内核防护项保留。
 
 ### 最小特权 helper（默认）
 
@@ -326,6 +328,7 @@ allow_sites = true      # 托管站点：配置写入（helper 端重新生成�
 allow_apps = true       # 应用商店：经系统软件包管理器安装/卸载固定目录中的应用（参数在 helper 端重建）
 allow_databases = true  # 数据库管理：列表/建库/删库/用户管理（密码仅经 stdin，参数在 helper 端重建）
 allow_terminal = true   # 网页终端：中继 root PTY，终端页直接进入 root 登录 shell
+allow_files = true      # 文件管理：全盘浏览/下载/上传/编辑/删除等以 root 执行（路径与参数 helper 端重新校验）
 
 # 按服务/动作细分授权：单元名 = 允许的 systemd 动作（start/stop/restart）。
 # 缺省通配放开所有单元；如需收紧，把 "*" 行换成逐个单元，空表 = 全部拒绝。
@@ -340,7 +343,7 @@ allow_terminal = true   # 网页终端：中继 root PTY，终端页直接进入
 - 面板以 root 运行时（旧模式）完全忽略 `[helper]`，行为与旧版本一致；非 root 且未配置 `[helper]` 时，服务控制/防火墙/进程信号/在线更新返回明确错误，其余只读功能正常。
 - 网页终端（`allow_terminal`）：终端页始终进入 root 登录 shell——非 root 面板把 PTY 中继给 helper 派生，会话随面板连接断开或登录撤销即时回收；helper 未授权（`allow_terminal = false`）、未运行或协议过旧时终端以明确错误结束，不静默降级。详见 [终端](docs/WEB-TERMINAL.md)。
 - 服务列表、服务详情、日志读取等只读操作不经 helper。
-- 文件管理以 `lightpanel` 用户权限执行：能看/改什么取决于该用户的 OS 权限。需要 root 全盘文件管理时改用 `--legacy-root`，代价是 HTTP 进程重新获得 root。
+- 文件管理（`allow_files`）：全部接口经 helper 以 root 执行——浏览、下载、上传、在线编辑、新建、重命名、删除与改权限作用于整个文件系统（宝塔式 root 文件管理），root 属主的文件不再报 403。路径与参数在 helper 端重新校验，下载/上传/保存的内容经中继流式传输（上传与保存以提交帧收尾，传输中断不会落下半截文件）。设为 `false` 时回退为面板用户自身权限，root 属主文件的写操作将返回 403。
 - 在线更新：非 root 面板把 Release 资产下载到 `staging_dir`（默认 `/var/lib/lightpanel/update`），helper 复核目录属主/权限与 SHA256 清单后再换二进制并延迟重启面板；暂存目录必须属于面板用户且不允许组/其他用户可写。
 - 托管站点（`allow_sites`）：面板不发送文件内容——创建请求只带参数（名称、引擎、类型、域名、端口、根目录/反代目标），helper 用与面板完全一致的共享校验器和模板在本地重新生成配置；删除要求目标位于托管目录且含 `# managed by lightpanel` 标记；引擎重载与一键 SSL 的配置改写/挑战文件写入（`allow_sites` 整体开关，不做单元级细分）也在 helper 内完成，ACME 网络交互由面板自身完成、不依赖外部工具。站点校验原语（`pkg/helper/sites.go`）两端共享，保证判定一致。
 - helper 每次操作写 journald 审计日志（操作、UID、对象、结果）。

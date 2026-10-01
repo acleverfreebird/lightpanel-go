@@ -26,9 +26,22 @@ const (
 // Call performs one request on a fresh connection. A nil receiver fails
 // closed so callers can keep a single code path.
 func (c *Client) Call(ctx context.Context, req Request) (string, error) {
+	resp, err := c.CallResponse(ctx, req)
+	if err != nil {
+		return respOutput(resp), err
+	}
+	return resp.Output, nil
+}
+
+// CallResponse performs one request and returns the full response envelope
+// even on a logical failure (OK=false), so callers can read Code (the
+// HTTP-style status hint used by file operations) and raw Output. The error
+// is the same ErrHelper-wrapped message Call produces. A nil response means
+// the request never reached the helper (transport failure).
+func (c *Client) CallResponse(ctx context.Context, req Request) (*Response, error) {
 	resp, err := c.send(ctx, req)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if !resp.OK {
 		msg := resp.Error
@@ -41,9 +54,16 @@ func (c *Client) Call(ctx context.Context, req Request) (string, error) {
 		if hint := versionMismatchHint(resp); hint != "" {
 			msg += "\n" + hint
 		}
-		return resp.Output, fmt.Errorf("%w: %s", ErrHelper, msg)
+		return resp, fmt.Errorf("%w: %s", ErrHelper, msg)
 	}
-	return resp.Output, nil
+	return resp, nil
+}
+
+func respOutput(resp *Response) string {
+	if resp == nil {
+		return ""
+	}
+	return resp.Output
 }
 
 // Hello performs the protocol handshake and returns the helper's protocol
@@ -59,14 +79,23 @@ func (c *Client) Hello(ctx context.Context) (int, error) {
 	return resp.Version, nil
 }
 
-// Terminal opens one relayed root web-terminal PTY: it dials the helper,
-// performs the terminal request/response handshake and returns the live
-// connection speaking the relay framing (WriteInputFrame/WriteResizeFrame
-// panel→helper, raw PTY output helper→panel). EOF means the shell exited or
-// the helper went away. The caller owns the returned connection.
+// Terminal opens one relayed root web-terminal PTY. EOF on the returned
+// connection means the shell exited or the helper went away. The caller owns
+// the returned connection.
 func (c *Client) Terminal(ctx context.Context) (net.Conn, error) {
+	conn, _, err := c.Relay(ctx, Request{Op: OpTerminal})
+	return conn, err
+}
+
+// Relay performs the request/response handshake on a fresh connection and
+// returns the live connection plus the response, for operations whose real
+// payload streams after the handshake (terminal PTY relay, file content
+// transfer). A failed handshake returns a nil connection and, when the
+// helper answered, the rejection response (with its Code hint). The caller
+// owns the returned connection.
+func (c *Client) Relay(ctx context.Context, req Request) (net.Conn, *Response, error) {
 	if c == nil || c.Socket == "" {
-		return nil, fmt.Errorf("%w: helper not configured", ErrHelper)
+		return nil, nil, fmt.Errorf("%w: helper not configured", ErrHelper)
 	}
 	deadline := time.Now().Add(15 * time.Second)
 	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
@@ -75,17 +104,17 @@ func (c *Client) Terminal(ctx context.Context) (net.Conn, error) {
 	d := net.Dialer{Deadline: deadline}
 	conn, err := d.DialContext(ctx, "unix", c.Socket)
 	if err != nil {
-		return nil, fmt.Errorf("%w: helper socket %s: %v (is the lightpanel-helper service running?)", ErrHelper, c.Socket, err)
+		return nil, nil, fmt.Errorf("%w: helper socket %s: %v (is the lightpanel-helper service running?)", ErrHelper, c.Socket, err)
 	}
 	if err = conn.SetDeadline(deadline); err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("%w: set handshake deadline: %v", ErrHelper, err)
+		return nil, nil, fmt.Errorf("%w: set handshake deadline: %v", ErrHelper, err)
 	}
-	if err = json.NewEncoder(conn).Encode(Request{Op: OpTerminal}); err != nil {
+	if err = json.NewEncoder(conn).Encode(req); err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("%w: send request: %v", ErrHelper, err)
+		return nil, nil, fmt.Errorf("%w: send request: %v", ErrHelper, err)
 	}
-	// The response is a single JSON line; the PTY stream starts right after
+	// The response is a single JSON line; the raw stream starts right after
 	// it, so read through a buffered reader and carry any bytes swallowed
 	// past the response back into the stream.
 	br := bufio.NewReader(conn)
@@ -94,9 +123,9 @@ func (c *Client) Terminal(ctx context.Context) (net.Conn, error) {
 	if err = dec.Decode(&resp); err != nil {
 		conn.Close()
 		if errors.Is(err, io.EOF) {
-			return nil, fmt.Errorf("%w: helper closed the connection without a response", ErrHelper)
+			return nil, nil, fmt.Errorf("%w: helper closed the connection without a response", ErrHelper)
 		}
-		return nil, fmt.Errorf("%w: read response: %v", ErrHelper, err)
+		return nil, nil, fmt.Errorf("%w: read response: %v", ErrHelper, err)
 	}
 	_ = conn.SetDeadline(time.Time{})
 	if !resp.OK {
@@ -108,13 +137,13 @@ func (c *Client) Terminal(ctx context.Context) (net.Conn, error) {
 			msg += "\n" + hint
 		}
 		conn.Close()
-		return nil, fmt.Errorf("%w: %s", ErrHelper, msg)
+		return nil, &resp, fmt.Errorf("%w: %s", ErrHelper, msg)
 	}
 	leftover, _ := io.ReadAll(dec.Buffered())
-	return &relayConn{Conn: conn, prefix: leftover}, nil
+	return &relayConn{Conn: conn, prefix: leftover}, &resp, nil
 }
 
-// relayConn resumes the raw PTY stream after the JSON handshake: bytes the
+// relayConn resumes the raw stream after the JSON handshake: bytes the
 // response decoder buffered past the response are drained first, then the
 // connection itself. Everything else forwards to the underlying conn.
 type relayConn struct {
@@ -129,6 +158,16 @@ func (c *relayConn) Read(p []byte) (int, error) {
 		return n, nil
 	}
 	return c.Conn.Read(p)
+}
+
+// CloseWrite half-closes the stream: the peer still reads what was sent and
+// then sees EOF, which is how a file upload/save relay signals "body complete"
+// before reading the final verdict.
+func (c *relayConn) CloseWrite() error {
+	if cw, ok := c.Conn.(interface{ CloseWrite() error }); ok {
+		return cw.CloseWrite()
+	}
+	return nil
 }
 
 // versionMismatchHint explains a failed call when the responding helper

@@ -19,16 +19,23 @@ import (
 	"unicode/utf8"
 
 	"golang.org/x/sys/unix"
+
+	"lightpanel/pkg/helper"
 )
 
 const (
 	MaxUpload = 32 << 20
-	MaxEdit   = 1 << 20
+	// MaxEdit is the online editor's size cap; the helper enforces the same
+	// shared bound when file operations execute there.
+	MaxEdit = helper.MaxEditBytes
 )
 
 // Files manages the whole server filesystem. Clients pass absolute paths;
 // they are validated lexically (absolute, cleaned, no ".." components) and
 // then used directly, so symlink semantics match familiar tools like SFTP.
+// When the panel runs unprivileged, every operation is forwarded to the
+// privileged helper (FilesViaHelper) and executes as root there; a root
+// panel executes them in-process.
 type Files struct {
 	uploadLimit int64
 }
@@ -112,18 +119,15 @@ func guardVirtualTopDir(abs string) error {
 	return nil
 }
 
-type FileEntry struct {
-	Name     string `json:"name"`
-	Path     string `json:"path"`
-	IsDir    bool   `json:"is_dir"`
-	Regular  bool   `json:"regular"`
-	Symlink  bool   `json:"symlink"`
-	Size     int64  `json:"size"`
-	Mode     string `json:"mode"`
-	Modified int64  `json:"modified"`
-}
+// FileEntry is one directory-listing row; the JSON shape is defined by the
+// shared helper struct so both execution modes emit identical responses.
+type FileEntry = helper.FileEntry
 
 func (f *Files) List(w http.ResponseWriter, r *http.Request) {
+	if FilesViaHelper != nil {
+		f.listRemote(w, r)
+		return
+	}
 	abs, err := resolvePath(r.URL.Query().Get("path"))
 	if err != nil {
 		fileError(w, err)
@@ -181,6 +185,10 @@ func (f *Files) List(w http.ResponseWriter, r *http.Request) {
 	JSON(w, map[string]any{"path": abs, "items": list, "offset": offset, "more": more})
 }
 func (f *Files) Download(w http.ResponseWriter, r *http.Request) {
+	if FilesViaHelper != nil {
+		f.downloadRemote(w, r)
+		return
+	}
 	abs, err := resolvePath(r.URL.Query().Get("path"))
 	if err != nil {
 		fileError(w, err)
@@ -203,6 +211,10 @@ func (f *Files) Download(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(w, r, name, s.ModTime(), file)
 }
 func (f *Files) Upload(w http.ResponseWriter, r *http.Request) {
+	if FilesViaHelper != nil {
+		f.uploadRemote(w, r)
+		return
+	}
 	abs, err := resolvePath(r.URL.Query().Get("path"))
 	if err != nil || abs == "/" {
 		http.Error(w, "invalid destination", 400)
@@ -240,6 +252,10 @@ func (f *Files) Upload(w http.ResponseWriter, r *http.Request) {
 	JSON(w, map[string]string{"message": "uploaded"})
 }
 func (f *Files) Delete(w http.ResponseWriter, r *http.Request) {
+	if FilesViaHelper != nil {
+		f.deleteRemote(w, r)
+		return
+	}
 	abs, err := resolvePath(r.FormValue("path"))
 	if err != nil || abs == "/" {
 		http.Error(w, "cannot delete root or invalid path", 400)
@@ -264,6 +280,10 @@ func (f *Files) Delete(w http.ResponseWriter, r *http.Request) {
 	JSON(w, map[string]string{"message": "removed (directories must be empty)"})
 }
 func (f *Files) Mkdir(w http.ResponseWriter, r *http.Request) {
+	if FilesViaHelper != nil {
+		f.mkdirRemote(w, r)
+		return
+	}
 	abs, err := resolvePath(r.FormValue("path"))
 	if err != nil || abs == "/" {
 		http.Error(w, "invalid directory path", 400)
@@ -276,6 +296,10 @@ func (f *Files) Mkdir(w http.ResponseWriter, r *http.Request) {
 	JSON(w, map[string]string{"message": "directory created"})
 }
 func (f *Files) Rename(w http.ResponseWriter, r *http.Request) {
+	if FilesViaHelper != nil {
+		f.renameRemote(w, r)
+		return
+	}
 	from, err := resolvePath(r.FormValue("path"))
 	if err != nil || from == "/" {
 		http.Error(w, "invalid source path", 400)
@@ -302,6 +326,10 @@ func (f *Files) Rename(w http.ResponseWriter, r *http.Request) {
 	JSON(w, map[string]string{"message": "renamed"})
 }
 func (f *Files) Read(w http.ResponseWriter, r *http.Request) {
+	if FilesViaHelper != nil {
+		f.readRemote(w, r)
+		return
+	}
 	abs, err := resolvePath(r.URL.Query().Get("path"))
 	if err != nil {
 		fileError(w, err)
@@ -339,6 +367,10 @@ func (f *Files) Read(w http.ResponseWriter, r *http.Request) {
 	JSON(w, map[string]any{"path": abs, "size": s.Size(), "modified": s.ModTime().Unix(), "content": string(data)})
 }
 func (f *Files) Write(w http.ResponseWriter, r *http.Request) {
+	if FilesViaHelper != nil {
+		f.writeRemote(w, r)
+		return
+	}
 	abs, err := resolvePath(r.URL.Query().Get("path"))
 	if err != nil || abs == "/" {
 		http.Error(w, "invalid destination", 400)
@@ -424,6 +456,10 @@ func (f *Files) Write(w http.ResponseWriter, r *http.Request) {
 	JSON(w, map[string]string{"message": "saved"})
 }
 func (f *Files) Chmod(w http.ResponseWriter, r *http.Request) {
+	if FilesViaHelper != nil {
+		f.chmodRemote(w, r)
+		return
+	}
 	s := r.FormValue("mode")
 	mode, err := strconv.ParseUint(s, 8, 32)
 	if err != nil || len(s) != 3 || mode > 0777 {

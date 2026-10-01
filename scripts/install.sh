@@ -265,6 +265,8 @@ allow_apps = true
 allow_databases = true
 # 网页终端中继 root PTY（终端页直接进入 root 登录 shell）
 allow_terminal = true
+# 文件管理以 root 执行（浏览/上传/下载/编辑/删除等全盘操作）
+allow_files = true
 
 # 按服务/动作细分授权：单元名 = 允许的 systemd 动作。
 # 缺省通配放开所有单元（等价旧版 root 行为）。如需收紧，把 "*" 行换成
@@ -293,6 +295,7 @@ allow_sites = true
 allow_apps = true
 allow_databases = true
 allow_terminal = true
+allow_files = true
 
 # 升级默认：通配放开全部单元（旧版 root 行为）。建议改为按需授权，例如
 # 删除 "*" 行并逐个列出单元。

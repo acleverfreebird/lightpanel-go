@@ -54,6 +54,10 @@ allow_databases = true
 # 面板一致），非 root 面板必须开启；关闭后非 root 面板的终端以明确错误
 # 结束，不会静默降级为面板账号 shell。
 allow_terminal = true
+# 文件管理经 helper 以 root 执行：浏览/下载/上传/在线编辑/新建/重命名/
+# 删除/改权限作用于整个文件系统（与宝塔一致），root 属主的文件不再报
+# 403。路径与参数在 helper 端重新校验；关闭后回退为面板用户自身权限。
+allow_files = true
 # socket = "/run/lightpanel/helper.sock"
 # staging_dir = "/var/lib/lightpanel/update"
 

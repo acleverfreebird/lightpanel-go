@@ -22,6 +22,7 @@ type helperDiagnostics struct {
 	AllowFirewall    bool `json:"allow_firewall"`
 	AllowKill        bool `json:"allow_kill"`
 	AllowUpdate      bool `json:"allow_update"`
+	AllowFiles       bool `json:"allow_files"`
 }
 
 // This deliberately exposes a small projection of configuration: never serialize
@@ -68,7 +69,7 @@ func collectDiagnostics(ctx context.Context, cfg *config.Config) diagnostics {
 		result.Warnings = append(result.Warnings, "未找到 UFW 或 firewalld，防火墙管理不可用。")
 	}
 	if h := cfg.Helper; h != nil {
-		result.Helper = helperDiagnostics{Configured: true, ServiceRules: len(h.Services), AllowFirewall: h.AllowFirewall, AllowKill: h.AllowKill, AllowUpdate: h.AllowUpdate}
+		result.Helper = helperDiagnostics{Configured: true, ServiceRules: len(h.Services), AllowFirewall: h.AllowFirewall, AllowKill: h.AllowKill, AllowUpdate: h.AllowUpdate, AllowFiles: h.AllowFiles}
 		_, result.Helper.WildcardServices = h.Services["*"]
 		dialer := net.Dialer{Timeout: 250 * time.Millisecond}
 		conn, err := dialer.DialContext(ctx, "unix", h.Socket)
@@ -88,7 +89,11 @@ func collectDiagnostics(ctx context.Context, cfg *config.Config) diagnostics {
 		result.Notes = append(result.Notes, "已启用只读模式，所有修改操作均被禁止。")
 	}
 	if uid != 0 {
-		result.Notes = append(result.Notes, "文件操作与日志读取使用面板进程自身的 Linux 权限；Helper 不提升文件访问权限。")
+		if cfg.Helper != nil && cfg.Helper.AllowFiles {
+			result.Notes = append(result.Notes, "文件管理经 Helper 以 root 权限执行；日志读取使用面板进程自身的权限。")
+		} else {
+			result.Notes = append(result.Notes, "文件操作与日志读取使用面板进程自身的 Linux 权限；Helper 不提升文件访问权限。")
+		}
 		if cfg.Helper == nil && !cfg.ReadOnly {
 			result.Warnings = append(result.Warnings, "当前为普通用户且未配置 Helper，服务控制、防火墙和系统更新可能因权限不足失败。")
 		}

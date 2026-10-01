@@ -76,6 +76,8 @@ func runHelper(args []string) error {
 		AllowApps:      cfg.Helper.AllowApps,
 		AllowDatabases: cfg.Helper.AllowDatabases,
 		AllowTerminal:  cfg.Helper.AllowTerminal,
+		AllowFiles:     cfg.Helper.AllowFiles,
+		UploadLimit:    int64(cfg.MaxUploadMB) << 20,
 		PanelUnit:      "lightpanel",
 	}, slog.Default())
 }
@@ -156,10 +158,13 @@ func run() error {
 	defer files.Close()
 	// Least-privilege mode: an unprivileged panel forwards root-level
 	// operations to the helper, which authorizes them per service/action.
+	// The file manager rides the same path (allow_files) so file access runs
+	// with root semantics instead of the panel user's OS permissions.
 	// A root panel keeps the legacy direct-execution behavior.
 	if cfg.Helper != nil && os.Geteuid() != 0 {
 		client := &helper.Client{Socket: cfg.Helper.Socket}
 		sysinfo.PrivilegedCall = client.Call
+		sysinfo.FilesViaHelper = client
 		sysinfo.UpdateStagingDir = cfg.Helper.StagingDir
 		slog.Info("helper_mode_enabled", "socket", cfg.Helper.Socket)
 		go probeHelperVersion(client)

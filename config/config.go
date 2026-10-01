@@ -75,6 +75,11 @@ type HelperConfig struct {
 	// 开启；关闭后非 root 面板的终端会话将以明确错误结束（不会静默降级为
 	// 面板账号 shell）。
 	AllowTerminal bool `toml:"allow_terminal"`
+	// AllowFiles 允许文件管理经 helper 以 root 执行：浏览、下载、上传、在线
+	// 编辑、新建/重命名/删除/改权限作用于整个文件系统（宝塔式 root 文件
+	// 管理）。路径与参数在 helper 端重新校验；关闭后文件管理回退为面板
+	// 用户自身权限，root 属主文件的操作会返回 403。
+	AllowFiles bool `toml:"allow_files"`
 	// StagingDir 是非 root 面板下载更新资产的目录（属主必须是面板用户，权限
 	// 不得对组/其他用户可写；helper 安装前会复核）。
 	StagingDir string `toml:"staging_dir"`
@@ -223,6 +228,7 @@ func applyDefaults(c *Config, raw map[string]any) {
 		"allow_apps":      &c.Helper.AllowApps,
 		"allow_databases": &c.Helper.AllowDatabases,
 		"allow_terminal":  &c.Helper.AllowTerminal,
+		"allow_files":     &c.Helper.AllowFiles,
 	} {
 		if _, ok := section[key]; !ok {
 			*dst = true

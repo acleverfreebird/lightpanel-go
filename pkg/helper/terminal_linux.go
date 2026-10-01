@@ -140,11 +140,18 @@ func teardownRelay(pid int, tty *os.File, conn net.Conn) {
 	_ = conn.Close()
 }
 
-// writeRelayResponse answers the terminal request inside the short request
-// deadline; after an OK answer the connection turns into the raw relay
-// stream.
+// writeRelayResponse answers the relay request inside the short request
+// deadline. The JSON is written WITHOUT a trailing newline: everything after
+// the response value is raw stream content (PTY bytes, file bytes), and an
+// encoder newline would leak into the stream as a leading byte depending on
+// buffering timing.
 func writeRelayResponse(conn net.Conn, resp Response) bool {
 	resp.Version = ProtocolVersion
+	data, err := json.Marshal(resp)
+	if err != nil {
+		return false
+	}
 	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
-	return json.NewEncoder(conn).Encode(resp) == nil
+	_, werr := conn.Write(data)
+	return werr == nil
 }

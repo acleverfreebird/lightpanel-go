@@ -49,8 +49,20 @@ type ServerConfig struct {
 	// connection gets an interactive root login shell for as long as the
 	// panel keeps the session alive.
 	AllowTerminal bool
+	// AllowFiles gates the whole-filesystem file manager running as root:
+	// browse, download, upload, edit, mkdir, rename, delete and chmod on any
+	// path the panel sends (paths and arguments re-validated here).
+	AllowFiles bool
+	// UploadLimit mirrors the panel's max_upload_mb as the helper-side cap
+	// for file uploads. Zero falls back to 32 MiB.
+	UploadLimit int64
 	// PanelUnit is the systemd unit restarted after a successful self-update.
 	PanelUnit string
+	// Listener, when set, is served directly instead of Run binding
+	// cfg.Socket: the socket-dir ownership check and the socket chown/chmod
+	// are skipped because the caller owns the listener. Tests use this to
+	// serve a real helper inside a private temp directory without root.
+	Listener net.Listener
 }
 
 const (
@@ -158,12 +170,6 @@ func checkSocketDir(socket string) error {
 
 // Run serves privileged operations until ctx is done or the listener fails.
 func Run(ctx context.Context, cfg ServerConfig, log *slog.Logger) error {
-	if !ValidAbsPath(cfg.Socket) {
-		return errors.New("helper.socket must be an absolute cleaned path")
-	}
-	if err := checkSocketDir(cfg.Socket); err != nil {
-		return err
-	}
 	uids, gid, err := ResolveUsers(cfg.AllowedUsers)
 	if err != nil {
 		return err
@@ -175,17 +181,26 @@ func Run(ctx context.Context, cfg ServerConfig, log *slog.Logger) error {
 	for _, id := range uids {
 		allowed[id] = true
 	}
-	_ = os.Remove(cfg.Socket) // a stale socket from a crashed run; bind below fails on anything live
-	l, err := net.Listen("unix", cfg.Socket)
-	if err != nil {
-		return fmt.Errorf("listen on %s: %v", cfg.Socket, err)
-	}
-	defer l.Close()
-	if err := os.Chown(cfg.Socket, uids[0], gid); err != nil {
-		return fmt.Errorf("set socket owner: %w", err)
-	}
-	if err := os.Chmod(cfg.Socket, 0o660); err != nil {
-		return fmt.Errorf("set socket permissions: %w", err)
+	l := cfg.Listener
+	if l == nil {
+		if !ValidAbsPath(cfg.Socket) {
+			return errors.New("helper.socket must be an absolute cleaned path")
+		}
+		if err := checkSocketDir(cfg.Socket); err != nil {
+			return err
+		}
+		_ = os.Remove(cfg.Socket) // a stale socket from a crashed run; bind below fails on anything live
+		l, err = net.Listen("unix", cfg.Socket)
+		if err != nil {
+			return fmt.Errorf("listen on %s: %v", cfg.Socket, err)
+		}
+		defer l.Close()
+		if err := os.Chown(cfg.Socket, uids[0], gid); err != nil {
+			return fmt.Errorf("set socket owner: %w", err)
+		}
+		if err := os.Chmod(cfg.Socket, 0o660); err != nil {
+			return fmt.Errorf("set socket permissions: %w", err)
+		}
 	}
 	srv := &server{cfg: cfg, allowed: allowed, log: log}
 	go func() {
@@ -193,7 +208,7 @@ func Run(ctx context.Context, cfg ServerConfig, log *slog.Logger) error {
 		_ = l.Close()
 	}()
 	log.Info("helper_listening", "socket", cfg.Socket, "protocol", ProtocolVersion, "allowed_users", cfg.AllowedUsers,
-		"services", len(cfg.Services), "firewall", cfg.AllowFirewall, "kill", cfg.AllowKill, "update", cfg.AllowUpdate, "sites", cfg.AllowSites, "apps", cfg.AllowApps, "databases", cfg.AllowDatabases, "terminal", cfg.AllowTerminal)
+		"services", len(cfg.Services), "firewall", cfg.AllowFirewall, "kill", cfg.AllowKill, "update", cfg.AllowUpdate, "sites", cfg.AllowSites, "apps", cfg.AllowApps, "databases", cfg.AllowDatabases, "terminal", cfg.AllowTerminal, "files", cfg.AllowFiles)
 	// Slots bound concurrent connections. A relayed terminal holds its slot
 	// for the whole session, so the budget leaves room for a full set of
 	// terminals plus short operations.
@@ -202,7 +217,9 @@ func Run(ctx context.Context, cfg ServerConfig, log *slog.Logger) error {
 		conn, err := l.Accept()
 		if err != nil {
 			if ctx.Err() != nil {
-				_ = os.Remove(cfg.Socket)
+				if cfg.Listener == nil {
+					_ = os.Remove(cfg.Socket)
+				}
 				return nil
 			}
 			return err
@@ -259,16 +276,27 @@ func (s *server) handle(conn net.Conn) {
 		}
 	}
 	// The terminal relay answers and then streams for the session's lifetime;
-	// it manages its own deadlines and logging.
+	// it manages its own deadlines and logging. File content relays (download
+	// stream, upload/save body) do the same for their transfer window.
 	if req.Op == OpTerminal {
 		s.terminalRelay(uid, conn)
 		return
+	}
+	if req.Op == OpFile && IsFileRelayAction(req.Action) {
+		s.fileRelay(uid, conn, &req)
+		return
+	}
+	// A recursive delete over a huge tree can legitimately run past the
+	// baseline request deadline.
+	if req.Op == OpFile && req.Action == "delete" {
+		_ = conn.SetDeadline(time.Now().Add(fileRelayDeadline))
 	}
 	resp := s.dispatch(uid, &req)
 	resp.Version = ProtocolVersion
 	_ = json.NewEncoder(conn).Encode(resp)
 	s.log.Info("helper_op", "op", req.Op, "uid", uid, "unit", req.Unit, "action", req.Action,
-		"engine", req.Engine, "pid", req.PID, "site", req.Site, "path", req.Path, "ok", resp.OK)
+		"engine", req.Engine, "pid", req.PID, "site", req.Site, "path", req.Path, "to", req.To,
+		"ok", resp.OK)
 }
 
 // dispatch validates the operation against the configured ACLs before doing
@@ -335,6 +363,8 @@ func (s *server) dispatch(uid int, req *Request) Response {
 		return s.appInstall(req)
 	case OpDatabase:
 		return s.database(uid, req)
+	case OpFile:
+		return s.fileOp(req)
 	default:
 		return Response{Error: "unknown operation"}
 	}

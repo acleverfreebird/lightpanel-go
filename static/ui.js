@@ -32,7 +32,7 @@ export async function api(path, options = {}) {
   if (response.status === 401) { location.assign('/login'); throw new Error('登录已过期，请重新登录。'); }
   if (!response.ok) {
     const detail = (await response.text()).slice(0, 2500).trim();
-    const names = { 403: '操作被拒绝：请检查权限或重新登录', 409: '目标已变化或文件已存在，请刷新后重试', 413: '文件超过大小上限', 429: '请求过于频繁，请稍后重试', 501: '服务器不支持这项功能', 502: '系统命令执行失败', 503: '服务器繁忙，请稍后重试', 504: '操作超时，请刷新确认实际状态' };
+    const names = { 403: '操作被拒绝：权限不足或被服务器策略限制（与登录状态无关）', 409: '目标已变化或文件已存在，请刷新后重试', 413: '文件超过大小上限', 429: '请求过于频繁，请稍后重试', 501: '服务器不支持这项功能', 502: '系统命令执行失败', 503: '服务器繁忙，请稍后重试', 504: '操作超时，请刷新确认实际状态' };
     throw new Error(`${names[response.status] || '请求未完成'}（${response.status}）\n${detail}`);
   }
   return response.json();

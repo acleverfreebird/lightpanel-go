@@ -174,3 +174,16 @@ WSL Ubuntu 24.04（Go 1.27.1）实测：
 - `ProtectSystem=strict` 将整个文件系统只读（仅 `/opt/lightpanel`、`/etc/ufw`、`/etc/systemd/system` 可写），`/var/lib/apt`、`/var/cache/apt` 全部 EROFS；同理 `apt-get install`（写 `/usr`）、站点配置写入（`/etc/nginx`）、certbot（`/etc/letsencrypt`）在该单元下也必然失败。
 
 修复：helper 单元移除 `ProtectSystem=strict`/`ReadWritePaths` 与 `RestrictSUIDSGID`，保留 `NoNewPrivileges`、`PrivateTmp`、`ProtectHome` 与内核防护项（均不影响 apt/dpkg）；`LimitNOFILE=1024`、`TasksMax=128`、`MemoryHigh=256M`、`MemoryMax=512M` 为大型软件包（docker.io、mysql-server）留出计量余量。特权收敛不再依赖文件系统沙箱，而由白名单 argv（应用名/包名经 `AppInstallSteps` 目录重建、站点配置 helper 端本地生成）保证。`lightpanel-helper.service` 与 `scripts/install.sh` 内嵌单元同步修改，README 沙箱说明同步更新。
+
+## 2026-10-01 文件管理最小特权支持（root 全盘文件管理）
+
+非 root 面板做文件管理报 `操作被拒绝：请检查权限或重新登录（403）` 与 `file operation failed: unlinkat /usr/local/go.bak.*/VERSION: permission denied`：文件管理此前直接在面板进程内执行，受面板用户 OS 权限上限约束，对 root 属主文件必然 EACCES。
+
+改动与实现：
+
+- **helper 新增 `file` 操作**（协议 v5，`allow_files = true` 整体授权）：面板的 9 个文件接口（list/download/upload/read/write/mkdir/rename/delete/chmod）在非 root 面板下全部经 helper 以 root 执行；root 面板保持原进程内直连路径。`list`/`read` 的 JSON 由 helper 直接生成、面板原样透传（`FileEntry` 下沉到 `pkg/helper/protocol.go`，两端单一 JSON 形状）；`download`（fetch）与 `upload`/`save`（store/save）在 JSON 握手后切换为内容中继：下载为原始字节流 + 精确 Content-Length（截断在浏览器侧可见），上传/保存为分帧传输 + 提交帧（FrameCommit）收尾，连接中断（无提交帧）时 helper 丢弃临时文件，绝不落半截文件。
+- **语义与直连模式逐项对齐**：上传永不覆盖（Lstat 预检 + `renameat2(RENAME_NOREPLACE)` 双保险）、保存原子替换并保留属主/权限、chmod 拒绝符号链接与 setuid/setgid、`/proc /sys /dev /run` 删除与移动在面板与 helper 双侧拒绝、路径在 helper 端用 `ValidAbsPath` 重新校验、`max_upload_mb` 上限两端各自强制（413）、错误经 `Response.Code`（404/403/409/413）原样映射回浏览器状态码。
+- **客户端通用化**：`Client.Relay`（请求/响应握手后返回裸流连接，终端复用同一实现）；`Client.CallResponse` 返回完整响应（Code 字段）。`writeRelayResponse` 改为无换行写入——否则编码器换行会按缓冲时序随机泄漏进流式内容（测试实际抓到 `"\ndownload-me"`）。
+- 配置：`allow_files` 随「部署即全功能」缺省开启，`config/example.toml`、`scripts/install.sh` 同步；升级时由 EnsureCurrent 自动补全。诊断投影新增 `allow_files` 并更新说明文案；前端 403 兜底文案不再误导为「重新登录」。
+- 测试：`pkg/helper/files_linux_test.go`（ACL 关闭拒绝、路径复验、列表/读取语义、fetch 元数据与流、store 生命周期/预检 409/上限 413/中断零残留、save 保留权限与符号链接拒绝、分帧边界）；`pkg/sysinfo/filemanager_remote_test.go` 以真实 helper + 真实 socket 端到端跑文件管理全生命周期（mkdir/upload/read/write/rename/delete/chmod、下载字节与 Content-Length、404/403 状态映射、分页、模式保留）。`go vet`、`gofmt`、`go test -race ./...`（WSL Ubuntu 24.04 / Go 1.27.1）全部通过，amd64/arm64 构建通过。
+- 已知限制：helper 模式下载为整文件流式（不支持 Range 续传，root 面板模式不变）；面板 `ReadTimeout/WriteTimeout`（60s）对大文件上传/下载的约束与旧版一致，未在本轮调整。

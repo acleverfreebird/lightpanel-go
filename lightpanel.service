@@ -6,9 +6,9 @@ Wants=lightpanel-helper.service
 [Service]
 Type=simple
 # 最小特权模式：面板以专用非特权用户 lightpanel 运行，root 级操作
-# （服务控制/防火墙/进程信号/在线更新）转发给 lightpanel-helper 服务，
-# 并由 helper 按 [helper] 配置中的白名单（服务/动作）授权。
-# 若需要面板本身以 root 运行（例如全盘 root 文件管理），把 User 改回 root；
+# （服务控制/防火墙/进程信号/在线更新/文件管理）转发给 lightpanel-helper
+# 服务，并由 helper 按 [helper] 配置中的白名单（服务/动作）授权。
+# 若需要面板本身以 root 运行，把 User 改回 root；
 # 此时 [helper] 不参与，行为与旧版本一致。
 User=lightpanel
 Group=lightpanel
@@ -21,8 +21,9 @@ RestartSec=3
 TimeoutStopSec=15
 UMask=0077
 NoNewPrivileges=true
-# 文件管理需要访问运行用户可读写的整个文件系统，因此不启用
-# ProtectSystem/ProtectHome/PrivateTmp/ReadWritePaths 等文件系统隔离。
+# 文件管理经 helper 以 root 执行后，面板自身只需读写其状态/日志/更新暂存
+# 目录；但文件内容（下载/上传/编辑）仍流经面板进程转发。如需进一步收紧，
+# 可结合实际部署路径启用 ProtectSystem/ReadWritePaths 等文件系统隔离。
 # 面板进程不需要任何 capability。
 CapabilityBoundingSet=
 AmbientCapabilities=
