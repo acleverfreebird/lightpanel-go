@@ -196,6 +196,25 @@ body:has(#terminal:not([hidden])) .page-heading { display: none; }
 .toolbar label select { width: 100%; }
 .panel .cards:last-child { margin-bottom: 0; }
 
+/* 文件管理：多选、剪贴板与回收站 */
+#file-list th:first-child, #file-list td:first-child { width: 36px; text-align: center; }
+#file-list input[type=checkbox], #trash-list input[type=checkbox] { width: 15px; height: 15px; accent-color: var(--accent); cursor: pointer; }
+.file-bars { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; border: 1px solid #b7ddd4; border-radius: var(--radius); background: var(--accent-soft); padding: 9px 14px; margin-bottom: 14px; }
+.file-bars[hidden] { display: none; }
+.file-bars strong { font-size: 13px; }
+.file-bars button { min-height: 30px; padding: 4px 12px; font-size: 12px; }
+.file-bars .text-button { font-size: 12px; }
+#file-clipboard { border-color: #d6e3dc; background: #f8fbf9; }
+#file-clipboard-text { flex: 1; min-width: 160px; font-size: 12px; color: var(--muted); }
+.trash-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+.trash-origin { font-family: Consolas, monospace; font-size: 12px; overflow-wrap: anywhere; }
+#trash-list table { min-width: 720px; }
+#trash-list { max-height: 46dvh; overflow: auto; }
+@media (max-width: 760px) {
+  .file-bars button { flex: 1 1 auto; }
+  #file-list th:first-child, #file-list td:first-child { width: 30px; }
+}
+
 /* Global command search */
 #command-dialog { width: min(590px,calc(100vw - 32px)); margin-top: min(16vh,130px); }
 .command-search { display: flex; align-items: center; gap: 12px; padding: 17px 20px; border-bottom: 1px solid var(--line); color: #7e9387; }

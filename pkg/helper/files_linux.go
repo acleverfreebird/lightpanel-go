@@ -143,6 +143,20 @@ func (s *server) fileOp(req *Request) Response {
 		return s.fileDelete(req)
 	case "chmod":
 		return s.fileChmod(req)
+	case "copy":
+		return s.fileCopy(req)
+	case "move":
+		return s.fileMove(req)
+	case "trash":
+		return s.fileTrash(req)
+	case "trash-list":
+		return s.fileTrashList()
+	case "trash-restore":
+		return s.fileTrashRestore(req)
+	case "trash-delete":
+		return s.fileTrashDelete(req)
+	case "trash-empty":
+		return s.fileTrashEmpty()
 	}
 	return Response{Error: "unsupported file action"}
 }
@@ -307,6 +321,119 @@ func (s *server) fileChmod(req *Request) Response {
 		return fileResp(err)
 	}
 	return Response{OK: true}
+}
+
+// fileDestDir validates the destination directory of a copy or move: an
+// absolute cleaned path that exists and is a real (followed) directory
+// outside the virtual system roots.
+func fileDestDir(reqTo string) (string, error) {
+	to, err := validFilePath(reqTo, false)
+	if err != nil {
+		return "", err
+	}
+	if err = guardFileVirtualTopDir(to); err != nil {
+		return "", err
+	}
+	info, err := os.Stat(to)
+	if err != nil {
+		return "", err
+	}
+	if !info.IsDir() {
+		return "", errors.New("destination must be an existing directory")
+	}
+	return to, nil
+}
+
+func (s *server) fileCopy(req *Request) Response {
+	from, err := validFilePath(req.Path, false)
+	if err != nil {
+		return fileInvalid(err.Error())
+	}
+	if err = guardFileVirtualTopDir(from); err != nil {
+		return fileInvalid(err.Error())
+	}
+	to, err := fileDestDir(req.To)
+	if err != nil {
+		return fileInvalid(err.Error())
+	}
+	if err = CopyEntry(from, to); err != nil {
+		return fileResp(err)
+	}
+	return Response{OK: true}
+}
+
+func (s *server) fileMove(req *Request) Response {
+	from, err := validFilePath(req.Path, false)
+	if err != nil {
+		return fileInvalid(err.Error())
+	}
+	if err = guardFileVirtualTopDir(from); err != nil {
+		return fileInvalid(err.Error())
+	}
+	to, err := fileDestDir(req.To)
+	if err != nil {
+		return fileInvalid(err.Error())
+	}
+	if err = MoveEntry(from, to); err != nil {
+		return fileResp(err)
+	}
+	return Response{OK: true}
+}
+
+func (s *server) fileTrash(req *Request) Response {
+	abs, err := validFilePath(req.Path, false)
+	if err != nil {
+		return fileInvalid(err.Error())
+	}
+	if err = TrashMovePath(abs); err != nil {
+		return fileResp(err)
+	}
+	return Response{OK: true}
+}
+
+func (s *server) fileTrashList() Response {
+	items, err := TrashList()
+	if err != nil {
+		return fileResp(err)
+	}
+	body, err := json.Marshal(map[string]any{"items": items})
+	if err != nil {
+		return Response{Error: err.Error(), Code: 500}
+	}
+	return Response{OK: true, Output: string(body)}
+}
+
+// fileTrashAction runs one recycle-bin entry action whose request Path is the
+// entry id (never a filesystem path — the id is validated against the id
+// alphabet and resolved inside the trash root by the shared implementation).
+func (s *server) fileTrashAction(req *Request, op func(string) error) Response {
+	if !validTrashID(req.Path) {
+		return fileInvalid("invalid recycle-bin entry id")
+	}
+	if err := op(req.Path); err != nil {
+		return fileResp(err)
+	}
+	return Response{OK: true}
+}
+
+func (s *server) fileTrashRestore(req *Request) Response {
+	return s.fileTrashAction(req, TrashRestore)
+}
+
+func (s *server) fileTrashDelete(req *Request) Response {
+	return s.fileTrashAction(req, TrashDelete)
+}
+
+func (s *server) fileTrashEmpty() Response {
+	cleared, err := TrashEmpty()
+	if err != nil {
+		return fileResp(err)
+	}
+	body, err := json.Marshal(map[string]int{"cleared": cleared})
+	if err != nil {
+		return Response{Error: err.Error(), Code: 500}
+	}
+	return Response{OK: true, Output: string(body)}
 }
 
 // fileRelay serves the content-relaying file actions: it validates the

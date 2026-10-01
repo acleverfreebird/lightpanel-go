@@ -22,6 +22,10 @@ const paths = {
   tasks: 'M8 3h8v4H8z M5 5v16h14V5 M9 13l2 2 4-4',
   server: 'M4 4h16v6H4z M4 14h16v6H4z M7.5 7h.01 M7.5 17h.01 M16 7h1 M16 17h1',
   plus: 'M12 5v14 M5 12h14',
+  trash: 'M4 7h16 M9 7V4h6v3 M6 7l1 14h10l1-14 M10 11v6 M14 11v6',
+  copy: 'M9 9h11v11H9z M5 15V4h11',
+  cut: 'M8 4l8 12 M16 4L8 16 M7 20a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5 M17 20a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5',
+  paste: 'M9 4h6v3H9z M15 5h4v16H5V5h4 M8 12h8 M8 16h5',
   lock: 'M6 11h12v9H6z M8 11V7a4 4 0 0 1 8 0v4 M9.5 15.5h.01',
 };
 

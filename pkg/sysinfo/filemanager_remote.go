@@ -309,3 +309,87 @@ func (f *Files) chmodRemote(w http.ResponseWriter, r *http.Request) {
 	}
 	JSON(w, map[string]string{"message": "permissions updated"})
 }
+
+// fileOpError prefers the helper's own verdict message over the wrapped
+// transport error, so per-entry batch failures read like the direct mode's.
+func fileOpError(err error, resp *helper.Response) error {
+	if err != nil && resp != nil && resp.Error != "" {
+		return errors.New(resp.Error)
+	}
+	return err
+}
+
+// transferRemote forwards a batch copy or move to the helper one entry at a
+// time, aggregating per-entry failures into the same JSON shape as the local
+// implementation.
+func (f *Files) transferRemote(w http.ResponseWriter, r *http.Request, action string) {
+	paths, err := batchPaths(r)
+	if err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	to, err := resolvePath(r.FormValue("to"))
+	if err != nil || to == "/" {
+		http.Error(w, "invalid destination", 400)
+		return
+	}
+	if err = guardVirtualTopDir(to); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	// Existence and directory checks belong to the helper (root): the
+	// unprivileged panel process often cannot stat the destination itself.
+	done, failed := runBatch(paths, validateSource, func(abs string) error {
+		resp, err := FilesViaHelper.CallResponse(r.Context(), helper.Request{Op: helper.OpFile, Action: action, Path: abs, To: to})
+		return fileOpError(err, resp)
+	})
+	JSON(w, map[string]any{"done": done, "failed": failed})
+}
+
+func (f *Files) trashRemote(w http.ResponseWriter, r *http.Request) {
+	paths, err := batchPaths(r)
+	if err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	done, failed := runBatch(paths, validateSource, func(abs string) error {
+		resp, err := FilesViaHelper.CallResponse(r.Context(), helper.Request{Op: helper.OpFile, Action: "trash", Path: abs})
+		return fileOpError(err, resp)
+	})
+	JSON(w, map[string]any{"done": done, "failed": failed})
+}
+
+func (f *Files) trashListRemote(w http.ResponseWriter, r *http.Request) {
+	resp, err := FilesViaHelper.CallResponse(r.Context(), helper.Request{Op: helper.OpFile, Action: "trash-list"})
+	if err != nil {
+		fileGatewayError(w, err, resp)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_, _ = w.Write([]byte(resp.Output))
+}
+
+// trashEntryRemote forwards a per-entry trash action whose Path is the entry
+// id; the helper validates the id and resolves it inside the trash root.
+func (f *Files) trashEntryRemote(w http.ResponseWriter, r *http.Request, action, okMessage string) {
+	id := r.FormValue("id")
+	if id == "" {
+		http.Error(w, "invalid recycle-bin entry id", 400)
+		return
+	}
+	resp, err := FilesViaHelper.CallResponse(r.Context(), helper.Request{Op: helper.OpFile, Action: action, Path: id})
+	if err != nil {
+		fileGatewayError(w, fileOpError(err, resp), resp)
+		return
+	}
+	JSON(w, map[string]string{"message": okMessage})
+}
+
+func (f *Files) trashEmptyRemote(w http.ResponseWriter, r *http.Request) {
+	resp, err := FilesViaHelper.CallResponse(r.Context(), helper.Request{Op: helper.OpFile, Action: "trash-empty"})
+	if err != nil {
+		fileGatewayError(w, err, resp)
+		return
+	}
+	JSON(w, map[string]string{"message": "cleared"})
+}

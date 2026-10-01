@@ -81,6 +81,13 @@ func newHandler(cfg *config.Config, files *sysinfo.Files, manager *sysinfo.Manag
 	register("POST /api/file/rename", files.Rename)
 	register("POST /api/file/delete", files.Delete)
 	register("POST /api/file/chmod", files.Chmod)
+	register("POST /api/file/copy", files.Copy)
+	register("POST /api/file/move", files.Move)
+	register("POST /api/file/trash", files.Trash)
+	register("GET /api/file/trash-list", files.TrashList)
+	register("POST /api/file/trash/restore", files.TrashRestore)
+	register("POST /api/file/trash/delete", files.TrashDelete)
+	register("POST /api/file/trash/empty", files.TrashEmpty)
 	register("GET /api/logs", manager.Logs)
 	register("GET /api/update/check", sysinfo.UpdateCheck)
 	register("POST /api/update/apply", sysinfo.UpdateApply)
@@ -230,6 +237,9 @@ func security(cfg *config.Config, uploadLimit int64, next http.Handler) http.Han
 			limit = uploadLimit
 		case "/api/file/write":
 			limit = sysinfo.MaxEdit
+		case "/api/file/copy", "/api/file/move", "/api/file/trash":
+			// Batch form posts carry up to 200 repeated absolute paths.
+			limit = 1 << 20
 		case "/api/databases/query":
 			limit = helper.MaxDBSQL + (4 << 10) // one SQL batch plus form overhead
 		}

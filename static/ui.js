@@ -45,7 +45,10 @@ export async function mutate(path, data, raw = false) {
   const prior = buttons.map(button => button.disabled);
   buttons.forEach(button => button.disabled = true);
   try {
-    const result = await api(path, { method: 'POST', headers: { 'X-CSRF-Token': csrf }, body: raw ? data : new URLSearchParams(data) });
+    // URLSearchParams passes through verbatim so callers can repeat keys
+    // (batch file operations post multiple path entries at once).
+    const body = raw ? data : data instanceof URLSearchParams ? data : new URLSearchParams(data);
+    const result = await api(path, { method: 'POST', headers: { 'X-CSRF-Token': csrf }, body });
     message('操作已完成。');
     return result;
   } finally {
@@ -70,7 +73,7 @@ export function table(target, headers, rows, emptyText = '暂无条目', emptyHi
     return;
   }
   const grid = el('table'), head = el('thead'), row = el('tr'), body = el('tbody');
-  headers.forEach(text => { const th = el('th', text); th.scope = 'col'; row.append(th); });
+  headers.forEach(value => { const th = el('th'); th.scope = 'col'; th.append(value instanceof Node ? value : document.createTextNode(String(value))); row.append(th); });
   head.append(row);
   rows.forEach(values => {
     const row = el('tr');

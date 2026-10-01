@@ -337,3 +337,91 @@ func TestRemoteListPagination(t *testing.T) {
 		t.Fatalf("page 2 payload: %d items, more=%v, offset=%d", len(data.Items), data.More, data.Offset)
 	}
 }
+
+func TestRemoteBatchTransferAndTrash(t *testing.T) {
+	saved := helper.TrashDir
+	helper.TrashDir = filepath.Join(t.TempDir(), "trash")
+	t.Cleanup(func() { helper.TrashDir = saved })
+	f, dir := startRemoteFiles(t, nil)
+	os.Mkdir(filepath.Join(dir, "dest"), 0755)
+	os.WriteFile(filepath.Join(dir, "one.txt"), []byte("1"), 0640)
+	os.WriteFile(filepath.Join(dir, "two.txt"), []byte("2"), 0640)
+
+	// Batch copy through the helper places both entries and keeps them.
+	code, body := formBody(f.Copy, "/copy", "path="+dir+"/one.txt&path="+dir+"/two.txt&to="+dir+"/dest")
+	if code != 200 {
+		t.Fatalf("batch copy %d %s", code, body)
+	}
+	var summary struct {
+		Done   int            `json:"done"`
+		Failed []batchFailure `json:"failed"`
+	}
+	if err := json.Unmarshal([]byte(body), &summary); err != nil || summary.Done != 2 || len(summary.Failed) != 0 {
+		t.Fatalf("batch copy summary %s", body)
+	}
+	if data, err := os.ReadFile(filepath.Join(dir, "dest", "one.txt")); err != nil || string(data) != "1" {
+		t.Fatalf("copied content %q %v", data, err)
+	}
+	// A conflicting entry fails alone; the helper's own message surfaces.
+	code, body = formBody(f.Copy, "/copy", "path="+dir+"/one.txt&to="+dir+"/dest")
+	if code != 200 {
+		t.Fatalf("conflicting copy %d %s", code, body)
+	}
+	if err := json.Unmarshal([]byte(body), &summary); err != nil || summary.Done != 0 || len(summary.Failed) != 1 || !strings.Contains(summary.Failed[0].Error, "already exists") {
+		t.Fatalf("conflicting copy summary %s", body)
+	}
+	// Batch move into a fresh directory drops the originals.
+	os.Mkdir(filepath.Join(dir, "moved"), 0755)
+	code, body = formBody(f.Move, "/move", "path="+dir+"/one.txt&path="+dir+"/two.txt&to="+dir+"/moved")
+	if code != 200 {
+		t.Fatalf("batch move %d %s", code, body)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "one.txt")); !os.IsNotExist(err) {
+		t.Fatal("move kept the original")
+	}
+
+	// Trash via the helper, list, restore, permanently delete, empty.
+	code, body = formBody(f.Trash, "/trash", "path="+dir+"/moved/one.txt&path="+dir+"/moved/two.txt")
+	if code != 200 {
+		t.Fatalf("batch trash %d %s", code, body)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "moved", "one.txt")); !os.IsNotExist(err) {
+		t.Fatal("trashed entry still present")
+	}
+	w := httptest.NewRecorder()
+	f.TrashList(w, httptest.NewRequest("GET", "/trash-list", nil))
+	if w.Code != 200 {
+		t.Fatalf("trash list %d", w.Code)
+	}
+	var listing struct {
+		Items []helper.TrashItem `json:"items"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &listing); err != nil || len(listing.Items) != 2 {
+		t.Fatalf("trash listing %s", w.Body.String())
+	}
+	code, _ = formBody(f.TrashRestore, "/trash/restore", "id="+listing.Items[0].ID)
+	if code != 200 {
+		t.Fatalf("restore %d", code)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "moved", listing.Items[0].Name)); err != nil {
+		t.Fatalf("restored entry missing: %v", err)
+	}
+	code, _ = formBody(f.TrashDelete, "/trash/delete", "id="+listing.Items[1].ID)
+	if code != 200 {
+		t.Fatalf("permanent delete %d", code)
+	}
+	code, body = formBody(f.TrashEmpty, "/trash/empty", "")
+	if code != 200 {
+		t.Fatalf("trash empty %d %s", code, body)
+	}
+	// The destination-directory check runs inside the root helper: the
+	// unprivileged panel must not need to stat the destination itself.
+	os.Mkdir(filepath.Join(dir, "rootonly"), 0700)
+	code, body = formBody(f.Copy, "/copy", "path="+dir+"/moved/one.txt&to="+dir+"/rootonly")
+	if code != 200 {
+		t.Fatalf("copy into unreadable dir %d %s", code, body)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "rootonly", "one.txt")); err != nil {
+		t.Fatalf("copy into unreadable dir landed nothing: %v", err)
+	}
+}

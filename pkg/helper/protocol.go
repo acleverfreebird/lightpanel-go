@@ -48,7 +48,10 @@ const (
 // WebSocket pass-through.
 // v7: new site action conf-apply applies the full site spec (multi-domain
 // binding, default documents, whole-site redirect, pseudo-static presets).
-const ProtocolVersion = 7
+// v8: new file actions copy / move / trash / trash-list / trash-restore /
+// trash-delete / trash-empty: multi-select batch operations, a clipboard and
+// a restorable recycle bin, executing as root in both panel modes.
+const ProtocolVersion = 8
 
 // Relay framing for OpTerminal. After the helper answers the terminal request
 // with an OK Response, the connection stops speaking JSON: the panel sends
@@ -189,15 +192,22 @@ func ValidDBAction(action string) bool { return dbActions[action] }
 // switch the connection to a content relay after the handshake (see
 // FrameCommit and Client.Relay).
 var fileActions = map[string]bool{
-	"list":   true, // directory listing as the JSON response body
-	"read":   true, // editor read: UTF-8 text up to MaxEditBytes, JSON response body
-	"fetch":  true, // download: relay streams the regular file's raw bytes
-	"store":  true, // upload: relay receives raw bytes, never overwrites (O_EXCL)
-	"save":   true, // editor save: relay receives bytes, atomic tmp+rename preserving owner/mode
-	"mkdir":  true, // MkdirAll semantics
-	"rename": true, // renameat2 RENAME_NOREPLACE from Path to To
-	"delete": true, // remove, or RemoveAll when Recursive is set
-	"chmod":  true, // three octal digits in Mode, regular files and directories only
+	"list":          true, // directory listing as the JSON response body
+	"read":          true, // editor read: UTF-8 text up to MaxEditBytes, JSON response body
+	"fetch":         true, // download: relay streams the regular file's raw bytes
+	"store":         true, // upload: relay receives raw bytes, never overwrites (O_EXCL)
+	"save":          true, // editor save: relay receives bytes, atomic tmp+rename preserving owner/mode
+	"mkdir":         true, // MkdirAll semantics
+	"rename":        true, // renameat2 RENAME_NOREPLACE from Path to To
+	"delete":        true, // remove, or RemoveAll when Recursive is set
+	"chmod":         true, // three octal digits in Mode, regular files and directories only
+	"copy":          true, // copy the entry Path into the directory To, never overwriting
+	"move":          true, // move Path into To (rename, or copy+remove across devices)
+	"trash":         true, // move Path into the recycle bin, restorable
+	"trash-list":    true, // list the recycle bin's restorable entries
+	"trash-restore": true, // put the entry Path (a trash id) back at its original location
+	"trash-delete":  true, // permanently remove the entry Path (a trash id) from the bin
+	"trash-empty":   true, // clear the whole recycle bin
 }
 
 // ValidFileAction reports whether action is a helper-permitted file operation.

@@ -490,3 +490,178 @@ func (f *Files) Chmod(w http.ResponseWriter, r *http.Request) {
 	}
 	JSON(w, map[string]string{"message": "permissions updated"})
 }
+
+// batchFailure is one per-entry error of a batch file operation; a multi-select
+// operation reports every failure instead of aborting on the first.
+type batchFailure struct {
+	Path  string `json:"path"`
+	Error string `json:"error"`
+}
+
+// batchPaths parses the repeated path form values of a batch operation; the
+// cap matches one directory listing page.
+func batchPaths(r *http.Request) ([]string, error) {
+	if err := r.ParseForm(); err != nil {
+		return nil, err
+	}
+	paths := r.Form["path"]
+	if len(paths) == 0 || len(paths) > 200 {
+		return nil, errors.New("path must be provided (at most 200 entries per batch)")
+	}
+	return paths, nil
+}
+
+// runBatch validates and executes op for every entry, collecting per-entry
+// failures so one bad path never blocks the rest of a multi-select operation.
+func runBatch(paths []string, validate func(string) (string, error), op func(string) error) (int, []batchFailure) {
+	done, failed := 0, []batchFailure{}
+	for _, p := range paths {
+		abs, err := validate(p)
+		if err != nil {
+			failed = append(failed, batchFailure{Path: p, Error: err.Error()})
+			continue
+		}
+		if err = op(abs); err != nil {
+			failed = append(failed, batchFailure{Path: abs, Error: err.Error()})
+			continue
+		}
+		done++
+	}
+	return done, failed
+}
+
+// validateSource is the shared per-entry source validation of every batch
+// operation: an absolute path that is neither the root nor a virtual system
+// directory.
+func validateSource(p string) (string, error) {
+	abs, err := resolvePath(p)
+	if err != nil {
+		return "", err
+	}
+	if abs == "/" {
+		return "", errors.New("cannot operate on the filesystem root")
+	}
+	if err = guardVirtualTopDir(abs); err != nil {
+		return "", err
+	}
+	return abs, nil
+}
+
+func validateDestDir(to string) error {
+	info, err := os.Stat(to)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return errors.New("destination must be an existing directory")
+	}
+	return nil
+}
+
+func (f *Files) Copy(w http.ResponseWriter, r *http.Request) {
+	if FilesViaHelper != nil {
+		f.transferRemote(w, r, "copy")
+		return
+	}
+	f.transferLocal(w, r, helper.CopyEntry)
+}
+
+func (f *Files) Move(w http.ResponseWriter, r *http.Request) {
+	if FilesViaHelper != nil {
+		f.transferRemote(w, r, "move")
+		return
+	}
+	f.transferLocal(w, r, helper.MoveEntry)
+}
+
+// transferLocal executes a batch copy or move in-process (root panel mode).
+// The destination must be an existing directory outside the virtual system
+// roots; entries are placed there under their own names and never overwrite.
+func (f *Files) transferLocal(w http.ResponseWriter, r *http.Request, op func(string, string) error) {
+	paths, err := batchPaths(r)
+	if err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	to, err := resolvePath(r.FormValue("to"))
+	if err != nil || to == "/" {
+		http.Error(w, "invalid destination", 400)
+		return
+	}
+	if err = guardVirtualTopDir(to); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	if err = validateDestDir(to); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	done, failed := runBatch(paths, validateSource, func(abs string) error { return op(abs, to) })
+	JSON(w, map[string]any{"done": done, "failed": failed})
+}
+
+// Trash moves one batch of entries into the recycle bin (helper.TrashDir),
+// from where they can be restored or cleared via the trash endpoints.
+func (f *Files) Trash(w http.ResponseWriter, r *http.Request) {
+	if FilesViaHelper != nil {
+		f.trashRemote(w, r)
+		return
+	}
+	paths, err := batchPaths(r)
+	if err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	done, failed := runBatch(paths, validateSource, helper.TrashMovePath)
+	JSON(w, map[string]any{"done": done, "failed": failed})
+}
+
+func (f *Files) TrashList(w http.ResponseWriter, r *http.Request) {
+	if FilesViaHelper != nil {
+		f.trashListRemote(w, r)
+		return
+	}
+	items, err := helper.TrashList()
+	if err != nil {
+		fileError(w, err)
+		return
+	}
+	JSON(w, map[string]any{"items": items})
+}
+
+func (f *Files) TrashRestore(w http.ResponseWriter, r *http.Request) {
+	if FilesViaHelper != nil {
+		f.trashEntryRemote(w, r, "trash-restore", "restored")
+		return
+	}
+	if err := helper.TrashRestore(r.FormValue("id")); err != nil {
+		fileError(w, err)
+		return
+	}
+	JSON(w, map[string]string{"message": "restored"})
+}
+
+func (f *Files) TrashDelete(w http.ResponseWriter, r *http.Request) {
+	if FilesViaHelper != nil {
+		f.trashEntryRemote(w, r, "trash-delete", "removed")
+		return
+	}
+	if err := helper.TrashDelete(r.FormValue("id")); err != nil {
+		fileError(w, err)
+		return
+	}
+	JSON(w, map[string]string{"message": "removed"})
+}
+
+func (f *Files) TrashEmpty(w http.ResponseWriter, r *http.Request) {
+	if FilesViaHelper != nil {
+		f.trashEmptyRemote(w, r)
+		return
+	}
+	cleared, err := helper.TrashEmpty()
+	if err != nil {
+		fileError(w, err)
+		return
+	}
+	JSON(w, map[string]any{"cleared": cleared})
+}

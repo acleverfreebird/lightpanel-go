@@ -25,9 +25,10 @@ pkg/sysinfo/command.go       固定工具路径、超时和输出上限
 pkg/sysinfo/metrics.go       CPU/内存/磁盘/网络/负载/运行时间
 pkg/sysinfo/process.go       /proc 进程搜索、分页、pidfd 信号
 pkg/sysinfo/service.go       systemd 列表/状态/启停/重启
-pkg/sysinfo/filemanager.go   全盘文件浏览/上传/下载/新建/重命名/编辑/递归删除/chmod（面板入口，root 面板直连执行）
-pkg/sysinfo/filemanager_remote.go 非 root 面板的文件操作转发（helper 中继：列表/读取 JSON 直传，下载/上传/保存流式）
+pkg/sysinfo/filemanager.go   全盘文件浏览/上传/下载/新建/重命名/编辑/递归删除/chmod/批量复制/移动/回收站（面板入口，root 面板直连执行）
+pkg/sysinfo/filemanager_remote.go 非 root 面板的文件操作转发（helper 中继：列表/读取 JSON 直传，下载/上传/保存流式，批量操作逐项聚合）
 pkg/helper/files_linux.go    helper 端 root 文件操作执行体（路径复验、虚拟目录保护、流式中继与提交帧）
+pkg/helper/fileops_linux.go  面板与 helper 共享的复制/移动/回收站执行体（不覆盖语义、跨设备回退、恢复元数据）
 pkg/sysinfo/update.go        检查 GitHub Release、校验 SHA256、替换二进制并重启服务
 pkg/sysinfo/logs.go          journalctl 系统与服务日志
 pkg/sysinfo/firewall.go      UFW/firewalld 状态和端口规则
@@ -61,9 +62,9 @@ docs/SSL.md                  一键 SSL（内置 ACME）实现、存储布局与
 
 ### MVP 范围
 
-已实现：系统概览（指标趋势、主机信息、运行诊断、快捷入口）、进程搜索/分页/结束、systemd 服务管理（已加载与已安装单元、启停/重启/重载/开机自启）、全盘文件浏览/上传/下载/新建文件夹/重命名/在线编辑/递归删除/权限（非 root 面板经 helper 以 root 执行，宝塔式全盘文件管理）、版本检查与一键更新、单管理员登录和可选只读权限、系统/服务日志、防火墙端口规则、网站管理（宝塔式布局：站点表格 + 设置弹窗；自动识别 Nginx/Apache/Docker，浏览已配置站点，创建静态站点、反向代理或 Docker 容器部署，受控删除与重载；内置 ACME 客户端一键申请 Let's Encrypt 证书——不需要 certbot 等任何外部工具，支持强制 HTTPS、到期前 30 天自动续期与 Staging 测试证书）、应用商店（通过系统软件包管理器一键安装/卸载 Nginx/Apache/Docker/MySQL/MariaDB/PostgreSQL/Redis，安装与卸载均为后台任务并可查看进度与输出）、数据库管理（自动识别 MySQL/MariaDB/PostgreSQL/Redis；宝塔式数据库表格：搜索、字符集、容量、账号与密码查看/复制；一步建库=建库+建号+授权+字符集+访问来源选择，凭据备忘保存在面板状态目录；每库备份中心：后台备份/恢复/下载/删除备份，流式 gzip 存放于 /var/backups/lightpanel/databases；内置 SQL 控制台直接对库执行语句并表格化展示结果；创建用户与修改密码，引擎启停）。终端（Web Terminal）为宝塔风格的网页终端：侧栏打开即连，整页控制台（内置 xterm.js + 真 PTY，支持 vim/top、窗口自适应与 5000 行回滚），进入即 **root 登录 shell**（root 面板本地派生，非 root 面板经 helper 中继），复用面板登录会话，跨源握手拒绝、退出登录即时撤销并保留生命周期审计；详见 [终端](docs/WEB-TERMINAL.md)。
+已实现：系统概览（指标趋势、主机信息、运行诊断、快捷入口）、进程搜索/分页/结束、systemd 服务管理（已加载与已安装单元、启停/重启/重载/开机自启）、全盘文件浏览/上传/下载/新建文件夹/重命名/在线编辑/权限/多选批量操作（复制、剪切、粘贴、批量删除）/回收站（删除先进回收站，可恢复到原位置、逐条彻底删除或清空；存放于 /var/lib/lightpanel/trash；复制/移动/粘贴永不覆盖同名条目，同名冲突逐项报告）（非 root 面板经 helper 以 root 执行，宝塔式全盘文件管理）、版本检查与一键更新、单管理员登录和可选只读权限、系统/服务日志、防火墙端口规则、网站管理（宝塔式布局：站点表格 + 设置弹窗；自动识别 Nginx/Apache/Docker，浏览已配置站点，创建静态站点、反向代理或 Docker 容器部署，受控删除与重载；内置 ACME 客户端一键申请 Let's Encrypt 证书——不需要 certbot 等任何外部工具，支持强制 HTTPS、到期前 30 天自动续期与 Staging 测试证书）、应用商店（通过系统软件包管理器一键安装/卸载 Nginx/Apache/Docker/MySQL/MariaDB/PostgreSQL/Redis，安装与卸载均为后台任务并可查看进度与输出）、数据库管理（自动识别 MySQL/MariaDB/PostgreSQL/Redis；宝塔式数据库表格：搜索、字符集、容量、账号与密码查看/复制；一步建库=建库+建号+授权+字符集+访问来源选择，凭据备忘保存在面板状态目录；每库备份中心：后台备份/恢复/下载/删除备份，流式 gzip 存放于 /var/backups/lightpanel/databases；内置 SQL 控制台直接对库执行语句并表格化展示结果；创建用户与修改密码，引擎启停）。终端（Web Terminal）为宝塔风格的网页终端：侧栏打开即连，整页控制台（内置 xterm.js + 真 PTY，支持 vim/top、窗口自适应与 5000 行回滚），进入即 **root 登录 shell**（root 面板本地派生，非 root 面板经 helper 中继），复用面板登录会话，跨源握手拒绝、退出登录即时撤销并保留生命周期审计；详见 [终端](docs/WEB-TERMINAL.md)。
 
-安全边界：这是有权限的主机管理工具，不是多租户容器。文件管理面向**整个文件系统**：所有接口只接受绝对路径，`..` 组件、反斜杠与 NUL 一律拒绝；`/proc`、`/sys`、`/dev`、`/run` 这四个虚拟系统目录拒绝删除与移动。下载/编辑读取只接受普通文件（符号链接若最终指向普通文件也可下载）；chmod 只接受普通文件与目录，且拒绝 setuid/setgid 与符号链接；只允许普通文件上传，禁止覆盖；目录删除默认要求为空，带 `recursive=true` 时递归删除且不允许删除根；在线编辑只处理 ≤1 MiB 且不含 NUL 的普通文件，保存先写临时文件再原子替换，且拒绝以符号链接为目标的写入。非 root 面板的这些接口经 helper 以 root 权限执行（`allow_files`，见「最小特权 helper」），root 面板则直接执行；无论哪种模式，请务必启用 TLS/反代并保管好管理员密码。
+安全边界：这是有权限的主机管理工具，不是多租户容器。文件管理面向**整个文件系统**：所有接口只接受绝对路径，`..` 组件、反斜杠与 NUL 一律拒绝；`/proc`、`/sys`、`/dev`、`/run` 这四个虚拟系统目录拒绝删除、移动、复制与剪切，回收站内的条目也只能经回收站接口清除。下载/编辑读取只接受普通文件（符号链接若最终指向普通文件也可下载）；chmod 只接受普通文件与目录，且拒绝 setuid/setgid 与符号链接；只允许普通文件上传，禁止覆盖；目录删除默认要求为空，带 `recursive=true` 时递归删除且不允许删除根；在线编辑只处理 ≤1 MiB 且不含 NUL 的普通文件，保存先写临时文件再原子替换，且拒绝以符号链接为目标的写入。批量复制/移动/回收与恢复全部采用**不覆盖**语义（目标同名即拒绝，绝不静默替换），目录不会被复制/移动进其自身子树；回收站条目以随机 id 目录存放（`item` + `meta.json`，0700/0600），id 按字母表白名单校验、原始路径恢复前复验，跨文件系统的回收/移动/恢复先完整复制再删除源，任何中途失败都不会丢失原文件。非 root 面板的这些接口经 helper 以 root 权限执行（`allow_files`，见「最小特权 helper」），root 面板则直接执行；无论哪种模式，请务必启用 TLS/反代并保管好管理员密码。
 
 ## 2. 核心数据流与接口设计
 
@@ -97,6 +98,13 @@ API 默认必须登录。页面 `GET /` 未登录时跳转到 `/login`；API 返
 | POST | `/api/file/rename` | `path,to`；均为绝对路径，可在改名的同时移动，`to` 不得为根 |
 | POST | `/api/file/delete` | `path`；可选 `recursive=true` 递归删除，不允许删除根 |
 | POST | `/api/file/chmod` | `path,mode`；普通文件与目录，三位八进制 000–777，不允许 setuid/setgid 与符号链接 |
+| POST | `/api/file/copy` | `path`（可重复，≤200 项）`+to` 目标目录；批量复制到 `to` 下（保留原名），不覆盖同名，逐项返回 `done/failed` |
+| POST | `/api/file/move` | `path`（可重复）`+to`；批量移动（同设备 rename，跨设备先复制后删源），不覆盖同名，目录不可移入自身子树 |
+| POST | `/api/file/trash` | `path`（可重复）；批量移入回收站（`/var/lib/lightpanel/trash`，0700），可恢复 |
+| GET | `/api/file/trash-list` | 回收站列表：id、名称、原位置、大小、删除时间，按删除时间倒序 |
+| POST | `/api/file/trash/restore` | `id`；恢复到删除时的原位置（自动重建缺失的父目录），原位置同名即 409 |
+| POST | `/api/file/trash/delete` | `id`；从回收站永久删除单条 |
+| POST | `/api/file/trash/empty` | 清空回收站，返回 `cleared` 数量 |
 | GET | `/api/update/check` | 查询 `update_repo` 的最新 Release；无发布版本时 `latest` 为空 |
 | POST | `/api/update/apply` | `tag`；下载对应架构二进制并校验 SHA256SUMS，原子替换自身后重启服务；非 amd64/arm64 返回 501 |
 | GET | `/api/logs` | `name` 可选；`lines=1..1000` 默认 200 |
