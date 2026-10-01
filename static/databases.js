@@ -168,8 +168,25 @@ function prefillPassword(engine, name) {
 function randomPassword(len = 16) {
   // 去掉易混淆字符（0/O、1/l/I）的字母表，全部字符都通过面板与 MySQL 的校验。
   const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#$%^&*-_=+';
-  const bytes = crypto.getRandomValues(new Uint8Array(len));
-  return [...bytes].map(b => alphabet[b % alphabet.length]).join('');
+  // 256 不整除 68：先丢弃落入尾部的字节再取模，否则前几个字符出现概率偏高。
+  const limit = Math.floor(256 / alphabet.length) * alphabet.length;
+  const bytes = new Uint8Array(len);
+  let out = '';
+  while (out.length < len) {
+    crypto.getRandomValues(bytes);
+    for (const b of bytes) {
+      if (b >= limit) continue;
+      out += alphabet[b % alphabet.length];
+      if (out.length === len) break;
+    }
+  }
+  return out;
+}
+
+// 用户名上限是 32 字符（ValidDBUser），库名可到 63：同名账号照抄库名会在
+// 超长库名下变成非法默认值，截取前 32 位保证一步建库的建议账号始终可用。
+function sameNameUser(name) {
+  return name.trim().slice(0, 32);
 }
 
 function syncCharsetOptions() {
@@ -213,7 +230,7 @@ function openCreateDialog() {
   form.elements.password.value = randomPassword();
   // 每次打开都回到「用户名跟随库名」的默认状态。
   form.elements.user.dataset.touched = '';
-  form.elements.user.value = form.elements.name.value.trim();
+  form.elements.user.value = sameNameUser(form.elements.name.value);
   form.elements.host.hidden = form.elements.access.value !== 'custom';
   $('#db-create-dialog').showModal();
 }
@@ -242,7 +259,7 @@ async function submitCreate(event) {
   const form = event.target;
   const engine = form.elements.engine.value;
   const name = form.elements.name.value.trim();
-  const user = form.elements.user.value.trim() || name;
+  const user = form.elements.user.value.trim() || sameNameUser(name);
   const password = form.elements.password.value;
   const charset = form.elements.charset.disabled ? '' : form.elements.charset.value;
   const access = form.elements.access.value;
@@ -410,7 +427,7 @@ export function setupDatabases() {
   const createForm = $('#db-create-form');
   createForm.elements.name.addEventListener('input', () => {
     // 用户名跟随库名，直到手动修改过为止。
-    if (!createForm.elements.user.dataset.touched) createForm.elements.user.value = createForm.elements.name.value;
+    if (!createForm.elements.user.dataset.touched) createForm.elements.user.value = sameNameUser(createForm.elements.name.value);
   });
   createForm.elements.user.addEventListener('input', () => {
     createForm.elements.user.dataset.touched = 'true';

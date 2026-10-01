@@ -202,7 +202,7 @@
           <label>数据库名<input name="name" required pattern="[a-zA-Z0-9_]{1,63}" maxlength="63" placeholder="例如 app_production" aria-label="数据库名"><small>字母、数字和下划线，最长 63 个字符</small></label>
         </div>
         <div class="form-columns">
-          <label>用户名<input name="user" required pattern="[a-zA-Z0-9_][a-zA-Z0-9_.\-]{0,31}" maxlength="32" placeholder="默认与数据库名相同" aria-label="用户名"><small>自动创建并授权该账号访问此数据库</small></label>
+          <label>用户名<input name="user" required pattern="[a-zA-Z0-9_][a-zA-Z0-9_.\-]{0,31}" maxlength="32" placeholder="默认与数据库名相同" aria-label="用户名"><small>默认与数据库名相同（超 32 位自动截取），创建后可在列表中改密</small></label>
           <label>密码<div class="password-row"><input name="password" type="text" required maxlength="128" autocomplete="off" spellcheck="false" aria-label="密码"><button type="button" id="db-pass-regen" class="secondary">随机</button></div><small>随机生成，创建后可在列表中查看与复制</small></label>
         </div>
         <div class="form-columns">

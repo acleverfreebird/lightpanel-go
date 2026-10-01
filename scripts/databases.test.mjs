@@ -1,12 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { webcrypto as crypto } from 'node:crypto';
 import vm from 'node:vm';
 
 const app = await readFile(new URL('../static/app.js', import.meta.url), 'utf8');
 const databases = await readFile(new URL('../static/databases.js', import.meta.url), 'utf8');
 const apps = await readFile(new URL('../static/apps.js', import.meta.url), 'utf8');
 const template = await readFile(new URL('../templates/index.html', import.meta.url), 'utf8');
+
+// databases.js 以 ES module 书写：剥掉 import/export 后在 vm 里执行，
+// 顶层函数声明即成为 context 上的全局，供各测试直接调用。
+const loadDatabaseModule = context => {
+  vm.runInContext(databases.replace(/^import .*;\r?\n/gm, '').replace(/^export /gm, ''), context);
+  return context;
+};
 
 test('database page is wired into navigation, routes and template', () => {
   assert.match(app, /databases: \['数据库管理'/, 'app.js must register the databases page');
@@ -66,10 +74,37 @@ test('database overview renders an error-free API response with omitted errors',
     }),
     table: (target, headers, rows, emptyText) => tables.push({ target, rows, emptyText }),
   });
-  vm.runInContext(databases.replace(/^import .*;\r?\n/gm, '').replace(/^export /gm, ''), context);
+  loadDatabaseModule(context);
   await context.databases();
   assert.equal($('#db-engines').children.length, 4);
   assert.equal($('#db-engine-count').textContent, '0 / 4 已安装');
   assert.deepEqual(tables.map(t => t.target), ['#db-list', '#db-user-list']);
   assert.ok(tables.every(t => t.rows.length === 0 && t.emptyText));
+});
+
+test('same-name account suggestion stays within the 32-character user limit', () => {
+  // 库名可到 63 字符，用户名只到 32：默认账号照抄超长库名会变成非法值。
+  const context = loadDatabaseModule(vm.createContext({}));
+  assert.equal(context.sameNameUser('app_production'), 'app_production');
+  assert.equal(context.sameNameUser('a'.repeat(40)), 'a'.repeat(32));
+  assert.equal(context.sameNameUser('  padded  '), 'padded');
+  assert.equal(context.sameNameUser(''), '');
+});
+
+test('randomPassword draws every alphabet character without modulo bias', () => {
+  const context = loadDatabaseModule(vm.createContext({ crypto }));
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#$%^&*-_=+';
+  const seen = new Set();
+  for (let i = 0; i < 200; i++) {
+    const password = context.randomPassword();
+    assert.equal(password.length, 16);
+    for (const ch of password) {
+      assert.ok(alphabet.includes(ch), `unexpected character ${ch}`);
+      seen.add(ch);
+    }
+  }
+  // 200 次 × 16 位远超期望次数（每字符约 47 次），68 个字符应全部出现。
+  assert.equal(seen.size, alphabet.length);
+  const samples = new Set(Array.from({ length: 50 }, () => context.randomPassword()));
+  assert.equal(samples.size, 50);
 });
