@@ -8,11 +8,13 @@
   <link rel="stylesheet" href="/static/app.css">
   <link rel="stylesheet" href="/static/components.css">
   <link rel="stylesheet" href="/static/vendor/xterm/xterm.css">
+  {{if .ThemeCSS}}<link rel="stylesheet" href="{{.ThemeCSS}}" id="theme-style">{{end}}
+  <style id="scheme-style">:root{color-scheme:{{.Scheme}}}</style>
   <script src="/static/vendor/xterm/xterm.js"></script>
   <script src="/static/vendor/xterm/addon-fit.js"></script>
   <script type="module" src="/static/app.js"></script>
 </head>
-<body data-readonly="{{.ReadOnly}}" data-max-upload="{{.UploadMB}}" data-version="{{.Version}}" data-terminal-enabled="{{.TerminalEnabled}}">
+<body data-theme="{{.ThemeID}}" data-readonly="{{.ReadOnly}}" data-max-upload="{{.UploadMB}}" data-version="{{.Version}}" data-terminal-enabled="{{.TerminalEnabled}}">
   <a class="skip-link" href="#workspace">跳到主内容</a>
   <aside class="sidebar" id="navigation" aria-label="工作台导航">
     <button id="nav-close" class="icon-button mobile-only" type="button" aria-label="关闭导航"><span data-icon="close" aria-hidden="true"></span></button>
@@ -21,6 +23,7 @@
     <nav aria-label="管理模块">
       <div class="nav-label">总览</div>
       <button data-tab="overview" class="active"><span data-icon="home" aria-hidden="true"></span>工作台<span class="nav-current-dot" aria-hidden="true"></span></button>
+      <button data-tab="appearance"><span data-icon="appearance" aria-hidden="true"></span>外观</button>
       <div class="nav-label">应用与数据</div>
       <button data-tab="sites"><span data-icon="sites" aria-hidden="true"></span>网站</button>
       <button data-tab="databases"><span data-icon="databases" aria-hidden="true"></span>数据库</button>
@@ -130,6 +133,21 @@
 
       <section id="firewall" hidden aria-label="防火墙">
         <div class="firewall-grid"><article class="panel"><div class="panel-heading"><div><h2>防火墙状态</h2><p>当前引擎的状态与规则</p></div></div><label>防火墙引擎<select id="firewall-engine" aria-label="防火墙引擎"><option value="">自动检测</option><option value="ufw">UFW</option><option value="firewalld">firewalld</option></select></label><pre id="firewall-output" class="output light-output">正在读取防火墙状态…</pre></article><article class="panel"><div class="panel-heading"><div><h2>管理端口规则</h2><p>仅修改指定的端口与协议</p></div></div><form id="firewall-form" class="stack-form"><div class="form-columns"><label>端口<input name="port" type="number" min="1" max="65535" placeholder="例如 443" required></label><label>协议<select name="protocol"><option>tcp</option><option>udp</option></select></label></div><label>规则操作<select name="action"><option value="allow">允许访问</option><option value="deny">拒绝访问（仅 UFW）</option><option value="remove-allow">移除放行规则</option><option value="remove-deny">移除拒绝规则（仅 UFW）</option></select></label><div id="firewall-help" class="notice">选择引擎后查看规则生效方式。修改管理端口可能中断远程连接。</div><button data-mutation>检查并应用规则</button></form></article></div>
+      </section>
+
+      <section id="appearance" hidden aria-label="外观设置">
+        <article class="panel">
+          <div class="panel-heading">
+            <div><h2>主题 <span id="theme-count" class="count">—</span></h2><p>内置主题即点即用，也可以上传自己的配色</p></div>
+            <div class="heading-actions">
+              <a class="secondary" href="/static/themes/light.css" download="lightpanel-theme-template.css" title="下载包含全部设计变量的模板文件"><span data-icon="download" aria-hidden="true"></span> 主题模板</a>
+              <label class="file-picker"><span><span data-icon="upload" aria-hidden="true"></span> 上传主题</span><input id="theme-upload" type="file" accept=".css,text/css" aria-label="上传主题 CSS 文件"></label>
+            </div>
+          </div>
+          <div id="theme-list" class="theme-grid"><article class="metric-card skeleton">正在读取主题…</article></div>
+          <p class="section-note">主题是覆盖界面设计变量的 CSS 文件，上传后立即生效；同名文件再次上传视为更新。激活的主题保存在面板上，任何浏览器登录后都会使用同一配色。</p>
+          <details class="help-details"><summary>如何制作主题</summary><p class="section-note">下载主题模板，把其中的颜色变量改成你的配色即可：选择器使用 <code>[data-theme="你的主题id"]</code>，文件头注释里可声明 <code>name: 显示名称</code> 与 <code>scheme: light|dark</code>（深色主题建议声明 dark，滚动条与表单控件会跟随变化）。模板包含全部变量与默认值，改完后在上方上传即可试用。</p></details>
+        </article>
       </section>
 
       <section id="terminal" aria-label="终端" hidden>

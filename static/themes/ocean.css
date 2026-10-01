@@ -1,0 +1,9 @@
+/* LightPanel theme
+   name: 海洋
+   scheme: light */
+[data-theme="ocean"] {
+  --accent: #2e6fd8; --accent-hover: #1f5cc4; --accent-soft: #e9f0fd;
+  --cpu: #2e6fd8; --memory: #8a63d2; --disk: #d98e3f; --net: #2ba0a0;
+  --banner-strong: #1c3a63; --banner-fg: #5f7d9c; --banner-eyebrow: #6b87a5;
+  --brand-fg: #16324f; --nav-hover-fg: #244a7c;
+}

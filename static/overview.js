@@ -2,18 +2,39 @@ import { $, api, el, message } from './ui.js';
 import { size, percent, duration } from './format.js';
 import { icon } from './icons.js';
 
-const COLORS = { cpu: '#14846e', memory: '#6585c3', disk: '#c38a3f', net: '#8873b7' };
+// 颜色跟随主题：仪表条直接引用 CSS 变量，画布在绘制时读取计算样式。
+const TOKENS = { cpu: '--cpu', memory: '--memory', disk: '--disk', net: '--net' };
 const samples = [];
 let version = 0;
 let cards = null;
 
 const percentage = value => value === null ? '不可用' : `${value.toFixed(1)}%`;
 
+// 主题的 --cpu 等变量是 #rgb/#rrggbb 十六进制；趋势图渐变需要 rgba。
+function withAlpha(color, alpha) {
+  const hex = color?.trim();
+  const match = /^#([0-9a-f]{6}|[0-9a-f]{3})$/i.exec(hex || '');
+  if (!match) return hex || '#14846e';
+  const raw = match[1].length === 3 ? match[1].split('').map(c => c + c).join('') : match[1];
+  const [r, g, b] = [0, 2, 4].map(i => parseInt(raw.slice(i, i + 2), 16));
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+function themePalette() {
+  const css = getComputedStyle(document.body);
+  const value = name => css.getPropertyValue(name).trim();
+  return {
+    cpu: value('--cpu') || '#14846e', memory: value('--memory') || '#6585c3',
+    grid: value('--chart-grid') || '#edf0f4', gridStrong: value('--chart-grid-strong') || '#d4d9e0',
+    axis: value('--chart-axis') || '#a5adb8', surface: value('--surface') || '#fff',
+  };
+}
+
 function meter(color) {
   const track = el('div', undefined, 'metric-meter');
   track.setAttribute('role', 'img');
   const bar = el('span');
-  bar.style.background = color;
+  bar.style.background = `var(${color})`;
   bar.style.transform = 'scaleX(0)';
   track.append(bar);
   return { track, bar };
@@ -51,10 +72,10 @@ function buildCard({ label, symbolName, color, gauge }) {
 function ensureCards() {
   if (cards) return;
   cards = [
-    buildCard({ label: 'CPU 使用率', symbolName: 'cpu', color: COLORS.cpu, gauge: true }),
-    buildCard({ label: '内存使用', symbolName: 'memory', color: COLORS.memory, gauge: true }),
-    buildCard({ label: '磁盘使用', symbolName: 'disk', color: COLORS.disk, gauge: true }),
-    buildCard({ label: '网络接收', symbolName: 'network', color: COLORS.net, gauge: false }),
+    buildCard({ label: 'CPU 使用率', symbolName: 'cpu', color: TOKENS.cpu, gauge: true }),
+    buildCard({ label: '内存使用', symbolName: 'memory', color: TOKENS.memory, gauge: true }),
+    buildCard({ label: '磁盘使用', symbolName: 'disk', color: TOKENS.disk, gauge: true }),
+    buildCard({ label: '网络接收', symbolName: 'network', color: TOKENS.net, gauge: false }),
   ];
   $('#metrics').replaceChildren(...cards.map(part => part.card));
 }
@@ -111,6 +132,7 @@ export async function overview() {
 function drawChart() {
   const canvas = $('#resource-chart'), width = canvas.clientWidth, height = canvas.clientHeight;
   if (!width) return;
+  const palette = themePalette();
   const ratio = window.devicePixelRatio || 1;
   const pw = Math.round(width * ratio), ph = Math.round(height * ratio);
   if (canvas.width !== pw || canvas.height !== ph) { canvas.width = pw; canvas.height = ph; }
@@ -121,15 +143,15 @@ function drawChart() {
   ctx.font = '11px sans-serif';
   [0, 25, 50, 75, 100].forEach(value => {
     const y = bottom - value / 100 * (bottom - top);
-    ctx.fillStyle = '#a5adb8';
+    ctx.fillStyle = palette.axis;
     ctx.fillText(`${value}%`, 0, y + 4);
-    ctx.strokeStyle = value === 0 ? '#d4d9e0' : '#edf0f4';
+    ctx.strokeStyle = value === 0 ? palette.gridStrong : palette.grid;
     ctx.lineWidth = 1;
     ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(width, y); ctx.stroke();
   });
   const start = samples[0]?.time, end = samples.at(-1)?.time;
   if (start !== undefined) {
-    for (const [key, color, fill] of [['cpu', COLORS.cpu, true], ['memory', COLORS.memory, false]]) {
+    for (const [key, color, fill] of [['cpu', palette.cpu, true], ['memory', palette.memory, false]]) {
       const segments = [];
       let current = null;
       samples.forEach(sample => {
@@ -147,8 +169,8 @@ function drawChart() {
           ctx.lineTo(points[0][0], bottom);
           ctx.closePath();
           const grad = ctx.createLinearGradient(0, top, 0, bottom);
-          grad.addColorStop(0, 'rgba(20,132,110,.16)');
-          grad.addColorStop(1, 'rgba(20,132,110,0)');
+          grad.addColorStop(0, withAlpha(color, .16));
+          grad.addColorStop(1, withAlpha(color, 0));
           ctx.fillStyle = grad;
           ctx.fill();
         }
@@ -163,7 +185,7 @@ function drawChart() {
         ctx.arc(endX, endY, 3.2, 0, Math.PI * 2);
         ctx.fillStyle = color;
         ctx.fill();
-        ctx.strokeStyle = '#fff';
+        ctx.strokeStyle = palette.surface;
         ctx.lineWidth = 1.5;
         ctx.stroke();
       }
@@ -175,3 +197,5 @@ function drawChart() {
   if (latest) canvas.setAttribute('aria-label', `最近 ${samples.length} 次采样；当前 CPU ${percentage(latest.cpu)}，内存 ${percentage(latest.memory)}`);
 }
 new ResizeObserver(drawChart).observe($('#resource-chart'));
+// 主题切换后立即用新配色重绘趋势图。
+document.addEventListener('themechange', drawChart);

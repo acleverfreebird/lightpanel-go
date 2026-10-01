@@ -1,0 +1,37 @@
+/* LightPanel theme
+   name: 深色
+   scheme: dark */
+[data-theme="dark"] {
+  color-scheme: dark;
+  scrollbar-color: var(--term-scroll) transparent;
+  --bg: #0f151b; --surface: #151c23; --text: #d9e2e9; --muted: #8b98a4; --line: #232d37;
+  --accent: #2aa487; --accent-hover: #37b796; --accent-soft: #14342b;
+  --sidebar: #121820; --sidebar-hover: #1a232c;
+  --danger: #d46f6f; --danger-hover: #e08585;
+  --warn-bg: #2c2312; --warn-fg: #d9a54e; --good-bg: #12291e; --good-fg: #63c795;
+  --cpu: #33b394; --memory: #7fa1da; --disk: #d4a25c; --net: #a794d1;
+  --on-accent: #06251c;
+  --btn-bg: #1b242d; --btn-fg: #b6c1cb; --btn-border: #2b3540; --btn-hover-border: #3a6b5c; --btn-hover-bg: #202a34;
+  --input-bg: #10161d; --input-border: #2b3540; --input-focus: #3aa88b; --placeholder: #5f6c78; --label-fg: #9aa7b3;
+  --kbd-border: #2b3540; --kbd-bg: #10161d;
+  --value-fg: #e7edf2; --card-fg: #c2cdd8; --meter-track: #232d37; --meter-idle: #3a4550;
+  --table-head-bg: #121820; --table-head-fg: #8b98a4; --table-row-border: #1d2730; --table-hover: #161f27;
+  --badge-bg: #1d262f; --badge-fg: #97a4b0; --bad-bg: #2e1c1c; --bad-fg: #e08e8e;
+  --notice-border: #4a3b1d; --notice-fg: #d9a54e;
+  --toast-border: #1f4434; --toast-bg: #12291e; --toast-fg: #6fd0a0;
+  --toast-err-border: #4a2523; --toast-err-bg: #2e1c1c; --toast-err-fg: #e59089;
+  --banner-strong: #7ed0b0; --banner-fg: #6fa28c; --banner-eyebrow: #5f8f7b; --banner-border: #1f3a2f;
+  --topbar-bg: #151c23e6; --topbar-fg: #b6c1cb; --divider: #333e49;
+  --avatar-bg: #262f39; --avatar-border: #323c46; --avatar-fg: #c6b795;
+  --nav-label: #6d7a86; --nav-fg: #97a4af; --nav-hover-fg: #7ed0b0;
+  --brand-fg: #d5e3dc; --brand-sub: #6f8579;
+  --workspace-bg: #121820; --monogram-bg: #1b2620; --monogram-border: #27352d; --monogram-fg: #7ea890;
+  --side-strong: #a7b4ac; --side-sub: #6e7d74; --sidechip-bg: #16211b; --sidechip-border: #22312a; --sidechip-fg: #7fa38f;
+  --eyebrow: #6d7a86; --footer-fg: #6d7a86; --separator: #333e49;
+  --skeleton: #1a232c; --soft-bg: #121921; --soft-border: #232d37; --dash-border: #2b3540; --strong-line: #2e3944;
+  --console-bg: #0d1218; --console-fg: #c9d4df;
+  --chart-grid: #1d2730; --chart-grid-strong: #2b3540; --chart-axis: #6d7a86;
+  --task-busy: #d19155;
+  --shadow-sm: 0 1px 2px #00000040; --shadow-panel: 0 2px 3px #00000033; --shadow-lg: 0 24px 100px #00000073; --backdrop: #000000a6;
+  --term-bg: #0b1015; --term-panel: #121921; --term-border: #05080c; --term-btn: #1b242d; --term-btn-hover: #242f3c;
+}

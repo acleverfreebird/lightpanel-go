@@ -159,10 +159,17 @@ func (a *Auth) Require(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), contextKey{}, s)))
 	})
 }
-func (a *Auth) Login(t *template.Template) http.HandlerFunc {
+
+// Login 渲染登录页时通过 data 提供激活主题的数据（模板按需取用），
+// 使登录页与工作台保持同一配色。
+func (a *Auth) Login(t *template.Template, data func() any) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "GET" {
-			if err := t.ExecuteTemplate(w, "login.html", nil); err != nil {
+			pageData := any(nil)
+			if data != nil {
+				pageData = data()
+			}
+			if err := t.ExecuteTemplate(w, "login.html", pageData); err != nil {
 				slog.Error("template", "error", err)
 			}
 			return

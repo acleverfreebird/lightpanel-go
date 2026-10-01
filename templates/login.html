@@ -6,8 +6,10 @@
   <title>登录 · LightPanel</title>
   <link rel="stylesheet" href="/static/app.css">
   <link rel="stylesheet" href="/static/login.css">
+  {{if .ThemeCSS}}<link rel="stylesheet" href="{{.ThemeCSS}}" id="theme-style">{{end}}
+  <style id="scheme-style">:root{color-scheme:{{.Scheme}}}</style>
 </head>
-<body class="login">
+<body class="login" data-theme="{{.ThemeID}}">
   <section class="login-story" aria-label="LightPanel 服务器工作台">
     <a class="brand" href="/login"><span class="brand-mark" aria-hidden="true"></span><span class="brand-text">LightPanel<small>SERVER WORKSPACE</small></span></a>
     <div class="story-content">

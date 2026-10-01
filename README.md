@@ -130,6 +130,11 @@ API 默认必须登录。页面 `GET /` 未登录时跳转到 `/login`；API 返
 | GET | `/api/databases/backup/download` | `engine,name,file`；流式下载备份文件 |
 | POST | `/api/databases/query` | `engine,name,sql`；SQL 控制台：以管理员身份在指定库上执行一批 SQL（≤32 KiB，60 秒超时），返回 TSV 结果 |
 | GET | `/api/health` | 运行诊断：UID 与模式（root/helper/普通/只读）、systemd 与系统工具可用性、helper 配置与可达性、中文告警；只读投影，不含路径与错误详情 |
+| GET | `/api/theme` | 主题清单与激活主题：`active,scheme,themes[]`（id、显示名、内置标记、CSS 地址、大小、更新时间、预览色板） |
+| POST | `/api/theme/upload?name=...&label=...` | 请求体是主题 CSS 原始字节（≤256 KiB，非 multipart）；`name` 为小写 slug（同时用作文件名），同名覆盖更新；内置主题不可覆盖 |
+| POST | `/api/theme/activate` | `id`；激活主题持久化到状态文件，由服务端渲染进每个页面 |
+| POST | `/api/theme/delete` | `id`；删除用户主题；删除激活中的主题时自动回落 light |
+| GET | `/themes/{id}` | 用户主题 CSS（`text/css`）；id 经 slug 校验，不存在路径穿越 |
 
 普通成功返回 JSON；操作失败返回纯文本与非 2xx。400 参数非法、401 未登录、403 权限/CSRF/Host 拒绝、404 文件不存在、409 文件冲突或进程变化、413 上传过大、429 登录限流、501 工具/内核能力不支持、502 系统命令失败、503 并发满、504 命令超时。服务命令错误不会伪装成成功。
 
@@ -165,6 +170,14 @@ API 默认必须登录。页面 `GET /` 未登录时跳转到 `/login`；API 返
 - 一步建库（宝塔式）：添加数据库时同步创建账号并 `GRANT ALL PRIVILEGES`（MySQL 家族为一条 stdin SQL 批处理；PostgreSQL 为 `CREATE ROLE` + `CREATE DATABASE ... OWNER`，开启 `ON_ERROR_STOP`，失败不留半成品）。字符集限白名单（PostgreSQL 固定引擎默认——修改编码需要 template0 与匹配的 locale，面板不提供），访问来源可选 localhost / 所有 IP / 自定义网段。面板把创建的账号、密码与访问来源存入状态目录（`/var/lib/lightpanel/db/credentials.json`，0600，回退用户状态目录），列表中可随时查看、复制；改密后备忘同步刷新，面板外创建的库不显示备忘。
 - 备份/恢复：`mysqldump --single-transaction --quick --routines --events`（MariaDB 优先 `mariadb-dump`）或 `pg_dump` 的输出在进程内流式 gzip 写入固定目录 `/var/backups/lightpanel/databases`（0700/0711，文件 0600；helper 模式下把文件属主改为面板用户，使非特权面板可流式下载而目录不可列举）。备份与恢复都是后台任务；文件名 `<引擎>_<库名>_<时间戳>.sql.gz` 经双向解析校验（引擎、库名、时间戳逐段重验证），不存在路径穿越；恢复时在进程内解压流式喂给客户端，两条客户端链路都开启“遇错即停”。
 - SQL 控制台：以管理员身份在指定库执行一批 SQL（mysql `--batch` / psql `-A -F`，输出为带表头的 TSV，前端解析展示前 200 行）。面板本身即管理工具（另有 root 网页终端），SQL 不做语句级过滤；单批 ≤32 KiB、60 秒超时、输出上限 1 MiB。
+
+主题与外观语义：
+
+- 主题 = 一个 CSS 文件：以 `[data-theme="<id>"]` 为选择器覆盖 `static/app.css` `:root` 中的设计变量即可换肤；内置 `light`（默认，同时是含全部变量的模板文件）、`dark`（深色）、`ocean`/`sunset`（强调色变体）随二进制嵌入 `static/themes/`。
+- 激活主题保存在面板状态目录（`/var/lib/lightpanel/themes/state.json`，0600；不可写时回退用户状态目录），服务端渲染时注入 `body[data-theme]` 与 `<head>` 的 `<link>`，登录页与工作台同一配色，刷新无闪烁、不依赖 localStorage；文件头注释可声明 `name:`（显示名）与 `scheme: light|dark`（驱动根节点 `color-scheme`，深色主题滚动条与表单控件跟随变暗）。
+- 上传校验：id 限小写 slug `^[a-z0-9][a-z0-9_-]{0,31}$`（同时用作文件名，杜绝路径穿越）；内容限 UTF-8、≤256 KiB，拒绝 `@import`、`javascript:`、`<script` 等（CSP `style-src 'self'` 本身已禁止外部样式加载，此为纵深防御）；最多 64 个用户主题；内置主题不可覆盖或删除。
+- 切换即时生效：前端替换 `<link>` 并更新 `data-theme` 后广播 `themechange` 事件，趋势图（canvas 读取 `--cpu` 等变量重绘）与网页终端（xterm 主题读取 `--term-*`）无需刷新即跟随新配色；趋势图、指标卡图标的底色由图表色经 `color-mix` 派生，主题只需覆盖核心色板即可整体换色。
+- 删除激活中的主题自动回落 light；激活的主题文件被外部删除时，下次渲染自动重置为 light。
 - 建库/删库/用户：数据库名限 `[a-zA-Z0-9_]`（1–63 字符），用户名限 `[a-zA-Z0-9_.-]`（1–32 字符）；全部 argv 由共享模块（`pkg/helper/databases.go`）在面板与 helper 两端重建。密码只经 stdin 渲染进 SQL，绝不出现在进程参数；含引号、反斜杠与 Unicode 的密码会被正确转义，但不允许控制字符。
 - 启停：数据库页的启动/停止/重启走系统服务页同一套 `POST /api/service/action`；`helper.services` 缺省通配放行所有单元，收紧模式下需加入对应单元（如 `mysql.service`、`postgresql.service`、`redis-server.service`）。
 - 最小特权模式：列表、变更、备份与控制台经 helper 的 `database` 操作（`allow_databases = true`），helper 端重新校验引擎、名称与密码并重建全部命令；备份/恢复连接与子进程各有 30/29 分钟上限，任务中心可查进度；root 模式由面板直接执行。

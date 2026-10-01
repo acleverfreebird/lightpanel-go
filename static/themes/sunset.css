@@ -1,0 +1,9 @@
+/* LightPanel theme
+   name: 落日
+   scheme: light */
+[data-theme="sunset"] {
+  --accent: #cf5b2e; --accent-hover: #b64a1f; --accent-soft: #fdeee6;
+  --cpu: #cf5b2e; --memory: #b04a72; --disk: #d9962e; --net: #8a63c9;
+  --banner-strong: #6e3a1c; --banner-fg: #9c6f52; --banner-eyebrow: #a87f60;
+  --brand-fg: #4a2a18; --nav-hover-fg: #8a4520;
+}

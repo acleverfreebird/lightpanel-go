@@ -22,7 +22,7 @@ func TestSessionCSRFAndRevocation(t *testing.T) {
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	r.Header.Set("Origin", "http://localhost")
 	w := httptest.NewRecorder()
-	a.Login(tmpl)(w, r)
+	a.Login(tmpl, nil)(w, r)
 	if w.Code != 303 {
 		t.Fatalf("login: %d %s", w.Code, w.Body.String())
 	}
@@ -79,7 +79,7 @@ func TestLoginLimitUsesIPNotSourcePort(t *testing.T) {
 		r.Header.Set("Origin", "http://localhost")
 		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		w := httptest.NewRecorder()
-		a.Login(tmpl)(w, r)
+		a.Login(tmpl, nil)(w, r)
 		want := 401
 		if i == 5 {
 			want = 429

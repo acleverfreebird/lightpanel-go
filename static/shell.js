@@ -32,7 +32,7 @@ export function setupShell(pages, go) {
   window.addEventListener('hashchange', () => closeNav());
   closeNav();
 
-  const keywords = { overview: 'dashboard cpu memory 概览', sites: 'nginx apache docker ssl 域名 证书',
+  const keywords = { overview: 'dashboard cpu memory 概览', appearance: 'theme 主题 外观 配色 深色 dark mode 颜色', sites: 'nginx apache docker ssl 域名 证书',
     databases: 'mysql mariadb postgresql redis sql', apps: 'install 安装 软件', files: 'upload download 上传 下载',
     terminal: 'shell bash ssh', processes: 'pid cpu', services: 'systemd restart', firewall: 'port ufw firewalld 安全', logs: 'journalctl audit 审计' };
   const entries = Object.entries(pages).map(([id, [title, description]]) => ({ id, title, description, keywords: keywords[id] }));

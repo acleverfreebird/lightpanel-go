@@ -1,0 +1,75 @@
+/* LightPanel 主题文件模板
+   这个文件就是内置「浅色」主题，也是制作自定义主题的完整模板：
+   1. 把 [data-theme="light"] 里的 id 改成你的主题 id（小写字母、数字、中划线）；
+   2. 修改下方变量的颜色值；变量含义见每行注释；
+   3. 在文件头声明 name（显示名称）与 scheme（light 或 dark，
+      dark 会让滚动条、表单控件跟随深色）；
+   4. 在面板「外观」页上传即可使用；同名重复上传视为更新。 */
+/* LightPanel theme
+   name: 浅色
+   scheme: light */
+[data-theme="light"] {
+  color-scheme: light;
+  /* 基础面：页面背景 / 卡片表面 / 正文文字 / 次要文字 / 分隔线 */
+  --bg: #f5f7f9; --surface: #fff; --text: #24333f; --muted: #73808c; --line: #e7ecef;
+  /* 强调色：主按钮与链接 / 悬停 / 浅色强调底 */
+  --accent: #14846e; --accent-hover: #0c6b58; --accent-soft: #eaf5f0;
+  /* 侧边栏：背景 / 悬停项 */
+  --sidebar: #fff; --sidebar-hover: #f4f7f6;
+  /* 危险操作 */
+  --danger: #cf5252; --danger-hover: #b64040;
+  /* 警示与成功徽标 */
+  --warn-bg: #fff7e9; --warn-fg: #96691e; --good-bg: #eaf6ef; --good-fg: #237854;
+  /* 图表与指标卡配色 */
+  --cpu: #14846e; --memory: #6585c3; --disk: #c38a3f; --net: #8873b7;
+  /* 圆角与侧边栏宽度（可选，不建议修改） */
+  --radius: 8px; --panel-radius: 13px; --sidebar-width: 232px;
+  /* 主按钮上的文字颜色 */
+  --on-accent: #fff;
+  /* 次要按钮 */
+  --btn-bg: #fff; --btn-fg: #4b5965; --btn-border: #dce3e7; --btn-hover-border: #a9c9bf; --btn-hover-bg: #f8fcfa;
+  /* 输入框、下拉与表单标签 */
+  --input-bg: #fff; --input-border: #dce3e7; --input-focus: #6aae9c; --placeholder: #8a96a0; --label-fg: #53616e;
+  /* 键盘按键 kbd */
+  --kbd-border: #e0e6e8; --kbd-bg: #fff;
+  /* 指标数值与卡片标题、仪表盘刻度 */
+  --value-fg: #233c43; --card-fg: #364b56; --meter-track: #eff3f5; --meter-idle: #c9d1db;
+  /* 表格 */
+  --table-head-bg: #f8fafb; --table-head-fg: #7d8a94; --table-row-border: #eef2f4; --table-hover: #fafcfb;
+  /* 徽标 */
+  --badge-bg: #f0f3f5; --badge-fg: #687783; --bad-bg: #fceeee; --bad-fg: #b94040;
+  /* 提示条（notice） */
+  --notice-border: #f0dfbf; --notice-fg: #8b682e;
+  /* 全局消息（操作成功 / 失败） */
+  --toast-border: #bbdbcd; --toast-bg: #f0faf5; --toast-fg: #267452;
+  --toast-err-border: #efcdca; --toast-err-bg: #fff4f2; --toast-err-fg: #aa4942;
+  /* 工作台主机横幅 */
+  --banner-strong: #284d3e; --banner-fg: #749081; --banner-eyebrow: #789384; --banner-border: #dcebe4;
+  /* 顶栏与面包屑 */
+  --topbar-bg: #ffffffed; --topbar-fg: #495c65; --divider: #cad2d6;
+  /* 顶栏用户头像 */
+  --avatar-bg: #edeae3; --avatar-border: #e2ded5; --avatar-fg: #7e7562;
+  /* 侧边栏导航 */
+  --nav-label: #8c989f; --nav-fg: #62707c; --nav-hover-fg: #2f5448;
+  /* 品牌区文字 */
+  --brand-fg: #213c36; --brand-sub: #85958e;
+  /* 工作空间标签与字母块 */
+  --workspace-bg: #fafcfb; --monogram-bg: #e9efec; --monogram-border: #dce7e1; --monogram-fg: #547163;
+  /* 侧边栏底部服务器信息 */
+  --side-strong: #526358; --side-sub: #8b9690; --sidechip-bg: #f0f5f2; --sidechip-border: #e3ece6; --sidechip-fg: #748e81;
+  /* 页眉眉题、页脚与分隔符 */
+  --eyebrow: #8a989c; --footer-fg: #8d999f; --separator: #c1cbd0;
+  /* 骨架屏与通用软底色 */
+  --skeleton: #f1f5f3; --soft-bg: #fafbfc; --soft-border: #ebeff1; --dash-border: #d6e3dc; --strong-line: #bccbc4;
+  /* 终端之外的深色控制台输出区 */
+  --console-bg: #1c2532; --console-fg: #d8e0ea;
+  /* 趋势图网格与坐标轴文字 */
+  --chart-grid: #edf0f4; --chart-grid-strong: #d4d9e0; --chart-axis: #a5adb8;
+  /* 任务中心忙碌角标 */
+  --task-busy: #bd793b;
+  /* 阴影与对话框遮罩 */
+  --shadow-sm: 0 1px 2px #24333f05; --shadow-panel: 0 2px 3px #223d3202; --shadow-lg: 0 24px 100px #102b3433; --backdrop: #152d3b66;
+  /* 网页终端 */
+  --term-bg: #101820; --term-panel: #17202b; --term-border: #0a1017; --term-fg: #cdd5e0; --term-muted: #7f8b99;
+  --term-btn: #233042; --term-btn-hover: #2d3d53; --term-scroll: #33414e; --term-scroll-hover: #43566a;
+}

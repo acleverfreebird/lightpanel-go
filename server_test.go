@@ -273,3 +273,79 @@ func TestAuditRecordsTargetWithoutFileContents(t *testing.T) {
 		}
 	}
 }
+
+func TestThemeWorkflow(t *testing.T) {
+	h, _ := testPanel(t, false)
+	c, csrf := login(t, h)
+	// 首页注入激活主题：默认 light。
+	w := request(h, "GET", "/", "", c, "")
+	if w.Code != 200 {
+		t.Fatal(w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `data-theme="light"`) || !strings.Contains(body, `/static/themes/light.css`) {
+		t.Fatal("active theme not injected into index")
+	}
+	// 内置主题清单至少包含 light/dark/ocean/sunset。
+	w = request(h, "GET", "/api/theme", "", c, "")
+	var list struct {
+		Active string `json:"active"`
+		Themes []struct {
+			ID      string `json:"id"`
+			Builtin bool   `json:"builtin"`
+		} `json:"themes"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	builtins := map[string]bool{}
+	for _, theme := range list.Themes {
+		if theme.Builtin {
+			builtins[theme.ID] = true
+		}
+	}
+	for _, id := range []string{"light", "dark", "ocean", "sunset"} {
+		if !builtins[id] {
+			t.Fatalf("builtin theme %s missing: %+v", id, list.Themes)
+		}
+	}
+	// 内置主题不可覆盖；恶意内容被拒绝。
+	if w := request(h, "POST", "/api/theme/upload?name=dark", "body{}", c, csrf); w.Code != 403 {
+		t.Fatalf("builtin override: %d", w.Code)
+	}
+	if w := request(h, "POST", "/api/theme/upload?name=bad", "@import url('https://evil.example/x.css');", c, csrf); w.Code != 400 {
+		t.Fatalf("forbidden content accepted: %d", w.Code)
+	}
+	css := "/* name: 夜航 */\n[data-theme=\"test-night\"] { --bg: #101418; --accent: #7aa2f7; }"
+	if w := request(h, "POST", "/api/theme/upload?name=test-night&label="+url.QueryEscape("夜航"), css, c, csrf); w.Code != 200 {
+		t.Fatalf("upload: %d %s", w.Code, w.Body.String())
+	}
+	// 激活后首页注入用户主题；主题文件经 /themes/{id} 提供。
+	w = request(h, "POST", "/api/theme/activate", "id=test-night", c, csrf)
+	if w.Code != 200 {
+		t.Fatalf("activate: %d %s", w.Code, w.Body.String())
+	}
+	if w = request(h, "GET", "/", "", c, ""); !strings.Contains(w.Body.String(), `data-theme="test-night"`) || !strings.Contains(w.Body.String(), `href="/themes/test-night"`) {
+		t.Fatal("user theme not injected into index")
+	}
+	w = request(h, "GET", "/themes/test-night", "", c, "")
+	if w.Code != 200 || !strings.HasPrefix(w.Header().Get("Content-Type"), "text/css") {
+		t.Fatalf("serve user theme: %d %s", w.Code, w.Header().Get("Content-Type"))
+	}
+	// 删除激活中的主题回落到 light。
+	if w := request(h, "POST", "/api/theme/delete", "id=test-night", c, csrf); w.Code != 200 {
+		t.Fatalf("delete: %d", w.Code)
+	}
+	if w = request(h, "GET", "/", "", c, ""); !strings.Contains(w.Body.String(), `data-theme="light"`) {
+		t.Fatal("active theme should fall back to light")
+	}
+	if w = request(h, "GET", "/themes/test-night", "", c, ""); w.Code != 404 {
+		t.Fatalf("deleted theme still served: %d", w.Code)
+	}
+	// 只读账号不能修改主题。
+	hr, _ := testPanel(t, true)
+	cr, csrfRO := login(t, hr)
+	if w := request(hr, "POST", "/api/theme/activate", "id=dark", cr, csrfRO); w.Code != 403 {
+		t.Fatalf("readonly activate accepted: %d", w.Code)
+	}
+}

@@ -12,19 +12,23 @@ import { setupUpdate } from './update.js';
 import { hydrateIcons } from './icons.js';
 import { setupTerminal } from './terminal.js';
 import { setupShell } from './shell.js';
+import { setupAppearance } from './theme.js';
 
 hydrateIcons();
 
 const pageKickers = {
-  terminal: 'OPS / 终端',
+  terminal: 'OPS / 终端', appearance: 'WORKSPACE / 外观',
   overview: 'OVERVIEW', processes: 'OPERATIONS / 进程',
   services: 'OPERATIONS / 服务', apps: 'DEPLOY / 应用', sites: 'DEPLOY / 网站',
   databases: 'DEPLOY / 数据', files: 'OPERATIONS / 文件',
   logs: 'OPERATIONS / 日志', firewall: 'SECURITY / 防火墙',
 };
 
+const appearance = setupAppearance();
+
 const pages = {
   terminal: ['终端', '打开即连的服务器终端，与本地 Shell 体验一致。', () => terminal.activate()],
+  appearance: ['外观设置', '挑选内置主题，或上传属于你的配色。', () => appearance.refresh()],
   overview: ['工作台', '从全局到细节，掌握服务器的每一刻。', () => Promise.all([overview(), diagnostics()])],
   processes: ['进程管理', '定位资源占用，安全地管理正在运行的进程。', processes],
   services: ['系统服务', '快速筛选服务状态，查看详情并执行维护操作。', services],

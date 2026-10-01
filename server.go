@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"context"
 	"embed"
+	"encoding/json"
 	"html/template"
 	"io/fs"
 	"log/slog"
@@ -51,8 +52,13 @@ func newHandler(cfg *config.Config, files *sysinfo.Files, manager *sysinfo.Manag
 	terminals := terminal.New(cfg)
 	mux := http.NewServeMux()
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(static))))
-	mux.HandleFunc("GET /login", a.Login(tmpl))
-	mux.HandleFunc("POST /login", a.Login(tmpl))
+	builtinThemes, err := fs.Sub(embeddedFiles, "static/themes")
+	if err != nil {
+		return nil, err
+	}
+	themes := sysinfo.NewThemeManager(builtinThemes)
+	mux.HandleFunc("GET /login", a.Login(tmpl, func() any { return themes.TemplateData() }))
+	mux.HandleFunc("POST /login", a.Login(tmpl, func() any { return themes.TemplateData() }))
 	// The web terminal authenticates with the login session cookie like every
 	// other panel route; admission checks (enabled flag, read-only, origin)
 	// live inside Connect.
@@ -60,7 +66,11 @@ func newHandler(cfg *config.Config, files *sysinfo.Files, manager *sysinfo.Manag
 	register := func(pattern string, h http.HandlerFunc) { mux.Handle(pattern, a.Require(audit(cfg.AdminUser, h))) }
 	register("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if err := tmpl.ExecuteTemplate(w, "index.html", map[string]any{"User": cfg.AdminUser, "CSRF": auth.CSRF(r), "ReadOnly": cfg.ReadOnly, "TerminalEnabled": cfg.TerminalOn(), "UploadMB": files.UploadLimit() >> 20, "Version": sysinfo.BuildVersion}); err != nil {
+		data := map[string]any{"User": cfg.AdminUser, "CSRF": auth.CSRF(r), "ReadOnly": cfg.ReadOnly, "TerminalEnabled": cfg.TerminalOn(), "UploadMB": files.UploadLimit() >> 20, "Version": sysinfo.BuildVersion}
+		for key, value := range themes.TemplateData() {
+			data[key] = value
+		}
+		if err := tmpl.ExecuteTemplate(w, "index.html", data); err != nil {
 			slog.Error("render", "error", err)
 		}
 	})
@@ -122,6 +132,17 @@ func newHandler(cfg *config.Config, files *sysinfo.Files, manager *sysinfo.Manag
 	register("POST /api/databases/backup/delete", databases.DBBackupDelete)
 	register("GET /api/databases/backup/download", databases.DBBackupDownload)
 	register("POST /api/databases/query", databases.DBQuery)
+	register("GET /api/theme", func(w http.ResponseWriter, r *http.Request) {
+		active := themes.TemplateData()
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		if err := json.NewEncoder(w).Encode(map[string]any{"active": active["ThemeID"], "scheme": active["Scheme"], "themes": themes.List()}); err != nil {
+			slog.Error("theme", "error", err)
+		}
+	})
+	register("POST /api/theme/upload", themes.Upload)
+	register("POST /api/theme/activate", themes.Activate)
+	register("POST /api/theme/delete", themes.Delete)
+	register("GET /themes/{id}", themes.Serve)
 	return &panelHandler{Handler: security(cfg, files.UploadLimit(), mux), terminal: terminals, certs: sslCerts}, nil
 }
 
@@ -235,6 +256,8 @@ func security(cfg *config.Config, uploadLimit int64, next http.Handler) http.Han
 		switch r.URL.Path {
 		case "/api/file/upload":
 			limit = uploadLimit
+		case "/api/theme/upload":
+			limit = sysinfo.MaxThemeUpload
 		case "/api/file/write":
 			limit = sysinfo.MaxEdit
 		case "/api/file/copy", "/api/file/move", "/api/file/trash":

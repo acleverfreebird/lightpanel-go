@@ -28,6 +28,16 @@ export function setupTerminal() {
     if (term && fit && socket?.readyState === WebSocket.OPEN) fit.fit();
   }
 
+  // 终端画布颜色来自主题变量（--term-*），切主题后即时跟随。
+  function termTheme() {
+    const css = getComputedStyle(document.body);
+    const value = name => css.getPropertyValue(name).trim();
+    const background = value('--term-bg') || '#101820';
+    const foreground = value('--term-fg') || '#cdd5e0';
+    return { background, foreground, cursor: foreground, cursorAccent: background, selectionBackground: value('--term-scroll') || '#33414e' };
+  }
+  document.addEventListener('themechange', () => { if (term) term.options.theme = termTheme(); });
+
   function disconnect() {
     const ws = socket;
     if (!ws) return;
@@ -42,7 +52,7 @@ export function setupTerminal() {
   function connect() {
     if (!available || socket) return;
     if (!term) {
-      term = new Terminal({ cursorBlink: true, fontSize: 13, scrollback: 5000, theme: { background: '#101820' } });
+      term = new Terminal({ cursorBlink: true, fontSize: 13, scrollback: 5000, theme: termTheme() });
       fit = new FitAddon.FitAddon();
       term.loadAddon(fit);
       term.open(container);
